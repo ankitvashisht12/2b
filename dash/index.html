@@ -72,8 +72,12 @@ async function load(day) {
 }
 
 function renderFailed(failed) {
-  byId('failed').innerHTML = failed.length === 0 ? '' : '<h2>Failed recurring tasks</h2>' + failed.map(task =>
-    card(task.id, `<b>${escapeHtml(task.title)}</b> <span class="muted">last run ${escapeHtml(task['last-run'])}</span>`, 'failed')).join('');
+  byId('failed').innerHTML = failed.length === 0 ? '' : '<h2>Failed recurring tasks</h2>' + failed.map(task => {
+    const [project, folder] = task.id.split('/');
+    const logPath = `projects/${project}/tasks/${folder}/${task['last-log']}`;
+    const logLink = task['last-log'] ? ` <a href="/api/file?path=${encodeURIComponent(logPath)}" target="_blank">run log</a>` : '';
+    return card(task.id, `<b>${escapeHtml(task.title)}</b> <span class="muted">last run ${escapeHtml(task['last-run'])}</span>${logLink}`, 'failed');
+  }).join('');
 }
 
 function projectCard(project, tasks) {
@@ -148,6 +152,7 @@ async function showDetail(id) {
 }
 
 document.addEventListener('click', event => {
+  if (event.target.closest('a')) return;
   const target = event.target.closest('[data-id]');
   if (!target) return;
   event.preventDefault();

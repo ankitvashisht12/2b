@@ -141,3 +141,47 @@ test('shows state response errors as page text', async () => {
   await vm.runInContext("load('2026-10-16')", sandbox);
   assert.ok([...elements.values()].some(element => element.textContent.includes('Store error <details>')));
 });
+
+
+test('state rejects invalid week dates with JSON and status 400', async () => {
+  const server = startDashboard(makeStore(), 0);
+  await new Promise(done => server.once('listening', done));
+  try {
+    const port = (server.address() as AddressInfo).port;
+    for (const week of ['bad', '2026-02-30', 'unknown', '']) {
+      const response = await fetch(`http://127.0.0.1:${port}/api/state?week=${week}`);
+      assert.equal(response.status, 400, week);
+      assert.match((await response.json()).error, /week/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('failed task cards link to the run log with an encoded store path', () => {
+  const page = fs.readFileSync(new URL('../dash/index.html', import.meta.url), 'utf8');
+  const script = page.match(/<script>([\s\S]*?)<\/script>/)![1];
+  const element = { innerHTML: '' };
+  const sandbox = vm.createContext({ document: { getElementById: () => element, addEventListener() {} } });
+  vm.runInContext(script.slice(0, script.lastIndexOf('load(new URLSearchParams')), sandbox);
+  vm.runInContext(`renderFailed([{id: 'ops/2026-10-16-job', title: 'Job', 'last-log': 'runs/test log.log'}])`, sandbox);
+  assert.ok(element.innerHTML.includes('/api/file?path=' + encodeURIComponent('projects/ops/tasks/2026-10-16-job/runs/test log.log')));
+  assert.match(element.innerHTML, /run log/i);
+});
+
+test('run log links keep their normal click action inside cards', () => {
+  const page = fs.readFileSync(new URL('../dash/index.html', import.meta.url), 'utf8');
+  const script = page.match(/<script>([\s\S]*?)<\/script>/)![1];
+  const listeners = new Map();
+  const sandbox = vm.createContext({ document: {
+    getElementById: () => ({}),
+    addEventListener: (name: string, listener: Function) => listeners.set(name, listener),
+  } });
+  vm.runInContext(script.slice(0, script.lastIndexOf('load(new URLSearchParams')), sandbox);
+  let prevented = false;
+  listeners.get('click')({
+    target: { closest: (selector: string) => selector === 'a' ? {} : { dataset: { id: 'ops/job' } } },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(prevented, false);
+});

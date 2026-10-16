@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { NODE_COMMAND, UserError, listProjects, listTasks, localDate, resolve, reverseLinks, type Entry } from './store.ts';
+import { NODE_COMMAND, UserError, assertDay, listProjects, listTasks, localDate, resolve, reverseLinks, type Entry } from './store.ts';
 import { isoWeek, weekEvents } from './week.ts';
 import { formatRules, rulesFor } from './rules.ts';
 
@@ -74,7 +74,14 @@ export function startDashboard(root: string, port: number): http.Server {
       } else if (url.pathname === '/api/ping') {
         sendJson({ ok: true, root });
       } else if (url.pathname === '/api/state') {
-        sendJson(dashboardState(root, url.searchParams.get('week') || localDate()));
+        const week = url.searchParams.get('week') ?? localDate();
+        try {
+          assertDay(week, 'week', false);
+        } catch (error) {
+          sendJson({ error: (error as Error).message }, 400);
+          return;
+        }
+        sendJson(dashboardState(root, week));
       } else if (url.pathname === '/api/entry') {
         sendJson(entryDetail(root, url.searchParams.get('id') ?? ''));
       } else if (url.pathname === '/api/file') {
