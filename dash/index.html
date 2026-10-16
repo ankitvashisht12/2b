@@ -57,7 +57,12 @@ const card = (id, html, extraClass = '') => `<div class="card ${extraClass}" tab
 const safeUrl = url => /^https?:\/\//.test(url) ? escapeHtml(url) : '#';
 
 async function load(day) {
-  const state = await (await fetch('/api/state?week=' + day)).json();
+  const response = await fetch('/api/state?week=' + day);
+  if (!response.ok) {
+    byId('failed').textContent = await response.text();
+    return;
+  }
+  const state = await response.json();
   byId('week').value = day;
   byId('week-title').textContent = `Week ${state.week.start} – ${state.week.end}`;
   renderFailed(state.failed);

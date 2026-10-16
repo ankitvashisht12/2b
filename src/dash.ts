@@ -53,11 +53,21 @@ export function entryDetail(root: string, id: string) {
 export function startDashboard(root: string, port: number): http.Server {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
+    if (url.pathname === '/api/file') {
+      response.setHeader('Content-Security-Policy', 'sandbox');
+      response.setHeader('X-Content-Type-Options', 'nosniff');
+    }
     const sendJson = (data: unknown, status = 200) => {
       response.writeHead(status, { 'content-type': 'application/json' });
       response.end(JSON.stringify(data));
     };
     try {
+      const address = server.address();
+      const listeningPort = address && typeof address !== 'string' ? address.port : undefined;
+      if (request.headers.host !== `127.0.0.1:${listeningPort}` && request.headers.host !== `localhost:${listeningPort}`) {
+        sendJson({ error: 'forbidden host' }, 403);
+        return;
+      }
       if (url.pathname === '/') {
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         response.end(fs.readFileSync(PAGE));
@@ -71,6 +81,12 @@ export function startDashboard(root: string, port: number): http.Server {
         const filePath = path.resolve(root, url.searchParams.get('path') ?? '');
         const isInsideStore = filePath.startsWith(root + path.sep);
         if (!isInsideStore || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+          sendJson({ error: 'not found' }, 404);
+          return;
+        }
+        const realRoot = fs.realpathSync(root);
+        const realFilePath = fs.realpathSync(filePath);
+        if (!realFilePath.startsWith(realRoot + path.sep)) {
           sendJson({ error: 'not found' }, 404);
           return;
         }
@@ -90,11 +106,21 @@ export function startDashboard(root: string, port: number): http.Server {
 export async function openDashboard(root: string, port: number): Promise<string> {
   const url = `http://127.0.0.1:${port}`;
   const isRunning = async () => {
+    let response: Response;
     try {
-      return (await fetch(`${url}/api/ping`)).ok;
+      response = await fetch(`${url}/api/ping`);
     } catch {
       return false;
     }
+    if (response.ok) {
+      try {
+        const ping = await response.json();
+        if (ping.root === root) return true;
+      } catch {
+        // A non-JSON response belongs to another program.
+      }
+    }
+    throw new UserError(`port ${port} is used by another 2b store or program`);
   };
   if (!(await isRunning())) {
     spawn(NODE_COMMAND[0], [...NODE_COMMAND.slice(1), 'dash', '--port', String(port)], {
