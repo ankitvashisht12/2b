@@ -50,7 +50,7 @@ function output(data: unknown, text: string): void {
 }
 
 function need(value: string | undefined, what: string): string {
-  if (!value) throw new store.UserError(`missing ${what}\n\n${USAGE}`);
+  if (!value) throw new store.UserError(`missing ${what} (see "2b help")`);
   return value;
 }
 
@@ -164,6 +164,10 @@ const commands: Record<string, () => void | Promise<void>> = {
     const projects = store.listProjects(root).filter(project => !text('area') || project.fields.area === text('area'));
     const shownProjectIds = new Set(projects.map(project => project.id));
     const statusFilter = text('status');
+    if (statusFilter !== undefined) {
+      const allowed = options.tasks || text('due-before') ? store.TASK_STATUSES : store.PROJECT_STATUSES;
+      store.assertOneOf(statusFilter, allowed, '--status');
+    }
     const matchesStatus = (status: unknown) => (statusFilter ? status === statusFilter : options.all || isOpen(status));
     if (options.tasks || text('due-before')) {
       const limit = text('due-before') ? dueLimit(text('due-before')!) : null;
@@ -261,6 +265,9 @@ const commands: Record<string, () => void | Promise<void>> = {
 
   async dash() {
     const port = Number(text('port') ?? DEFAULT_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new store.UserError('--port must be an integer from 1 to 65535');
+    }
     if (options.open) {
       const url = await openDashboard(root, port);
       output({ url }, url);
@@ -280,7 +287,11 @@ const commands: Record<string, () => void | Promise<void>> = {
   schedule() {
     if (rest[0] === 'sync') {
       const result = syncSchedules(root);
-      output(result, `Written: ${result.written.join(', ') || 'none'}. Removed: ${result.removed.join(', ') || 'none'}.`);
+      output(result, [
+        `Written: ${result.written.join(', ') || 'none'}. Removed: ${result.removed.join(', ') || 'none'}.`,
+        ...result.failed.map(failure => `Failed: ${failure.label} — ${failure.reason}`),
+      ].join('\n'));
+      if (result.failed.length) process.exitCode = 1;
       return;
     }
     if (rest[0] === 'ls') {
@@ -311,9 +322,19 @@ const commands: Record<string, () => void | Promise<void>> = {
       return;
     }
     if (rest[0] === 'apply') {
-      const plan = JSON.parse(fs.readFileSync(need(rest[1], 'plan file'), 'utf8'));
+      const planFile = need(rest[1], 'plan file');
+      let plan: Parameters<typeof applyPlan>[1];
+      try {
+        plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new store.UserError(`cannot read plan ${planFile}: ${reason}`);
+      }
       const report = applyPlan(root, plan, { dryRun: Boolean(options['dry-run']) });
       output(report, `Items copied: ${report.copied}. Files: ${report.files}. Junk skipped: ${Math.round(report.skippedJunkBytes / 1e6)} MB.${report.problems.length ? `\nProblems:\n${report.problems.join('\n')}` : ' Verified.'}`);
+      if (!options.json && report.skippedLinks?.length) {
+        console.log(`Links skipped: ${report.skippedLinks.length}\n${report.skippedLinks.map(link => `  ${link}`).join('\n')}`);
+      }
       if (report.problems.length) process.exitCode = 1;
       return;
     }
@@ -338,7 +359,7 @@ async function main(): Promise<void> {
     return;
   }
   const handler = commands[command];
-  if (!handler) throw new store.UserError(`unknown command "${command}"\n\n${USAGE}`);
+  if (!handler) throw new store.UserError(`unknown command "${command}" (see "2b help")`);
   if (!['init', 'notify'].includes(command) && !fs.existsSync(path.join(root, 'projects'))) {
     throw new store.UserError(`no store at ${root}; run "2b init"`);
   }
@@ -346,10 +367,8 @@ async function main(): Promise<void> {
 }
 
 main().catch(error => {
-  const isArgumentError = typeof error?.code === 'string' && error.code.startsWith('ERR_PARSE_ARGS');
-  if (error instanceof store.UserError || isArgumentError) {
-    console.error(`2b: ${error.message}`);
-    process.exit(1);
-  }
-  throw error;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`2b: ${message.replace(/[\r\n]+/g, ' ')}`);
+  if (process.env.TWOB_DEBUG && error instanceof Error) console.error(error.stack);
+  process.exitCode = 1;
 });
