@@ -26,7 +26,7 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 | "Task T depends on U" | `2b add <T> link <U> depends-on` |
 | "This PR is part of T" | `2b add <T> pr <url>` |
 | "Save this / put it in 2b" | find or create the task, then `2b artifact add <task> <name.html> --about "..." --why "..."`, then write the content to the printed path |
-| "What's active / paused / due?" | `2b ls --json`, `2b ls --status paused --json`, `2b ls --due-before +7d --json` |
+| "What's active / paused / due?" | `2b ls --json`, `2b ls --status paused --json`, `2b ls --tasks --status blocked --json`, `2b ls --tasks --due-before +7d --json` |
 | "What did I do this week / last week?" | `2b week [any day in that week] --json` |
 | "Find the thing about Z" | `2b find "Z"` |
 | "Quick note / dump" | `2b dump <slug> --title "..."`, then write to the printed path |
@@ -48,7 +48,7 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 ## Recurring tasks
 
 - "Every day at 7pm, do X" → `2b new task <project> <slug> --title "..." --every "daily 19:00" --run agent --body "<the full instruction>"`
-- "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --every "weekdays 14:00" --run command --command "2b dash --open"`
+- "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --title "Open dashboard" --every "weekdays 14:00" --run command --command "2b dash --open"`
 - Schedule format: `daily HH:MM`, `weekdays HH:MM`, `mon,fri HH:MM`, `hourly`.
 - `2b schedule ls` shows last results. `2b run <task>` runs one now. A failed run sends a notification and shows on the dashboard; read its `last-log`, fix the cause, and run it again.
 

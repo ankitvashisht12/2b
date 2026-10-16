@@ -6,6 +6,9 @@ Design: `docs/specs/2026-10-16-2b-design.md`.
 
 ## Install
 
+Requires Node 22.14 or later.
+
+    mkdir -p ~/.local/bin ~/.claude/skills ~/.agents/skills
     ln -s "$PWD/bin/2b" ~/.local/bin/2b      # run from the repo root
     ln -s "$PWD/skill" ~/.claude/skills/2b
     ln -s "$PWD/skill" ~/.agents/skills/2b   # Codex
@@ -18,3 +21,7 @@ Design: `docs/specs/2026-10-16-2b-design.md`.
 ## Test
 
     npm test
+
+## Known limits
+
+Codex agent tasks run with `--sandbox workspace-write` in the store. They can run commands and edit store files directly. Prefer `--agent claude` for untrusted input.
