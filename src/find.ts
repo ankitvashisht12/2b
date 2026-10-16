@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { UserError } from './store.ts';
 
 export type FindHit = { file: string; line: number; text: string };
 
@@ -9,6 +10,7 @@ const MAX_FILE_BYTES = 2_000_000;
 const MAX_HITS_PER_FILE = 3;
 
 export function findInStore(root: string, query: string, limit = 100): FindHit[] {
+  if (!query.trim()) throw new UserError('search text is empty');
   const needle = query.toLowerCase();
   const hits: FindHit[] = [];
   const visit = (dir: string) => {

@@ -1,14 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  AREAS, DATE, PROJECT_STATUSES, REASON_REQUIRED, TASK_STATUSES, assertSlug, readEntry,
+  AREAS, DATE, LINK_TYPES, PROJECT_STATUSES, REASON_REQUIRED, TASK_STATUSES, assertSlug, readEntry,
   type Entry, type Kind, type Link,
 } from './store.ts';
 import { parseEvery } from './schedule.ts';
 
 function subfolders(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter(name => !name.startsWith('.') && fs.statSync(path.join(dir, name)).isDirectory()).sort();
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter(item => item.isDirectory() && !item.name.startsWith('.'))
+    .map(item => item.name)
+    .sort();
 }
 
 function readOrReport(kind: Kind, project: string, dir: string, problems: string[]): Entry | null {
@@ -46,10 +49,14 @@ function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
     const value = fields[dateField];
     if (value && value !== 'unknown' && !DATE.test(String(value))) report(`${dateField} "${value}" is not yyyy-mm-dd or unknown`);
   }
-  for (const link of (fields.links as Link[] | null) ?? []) {
+  for (const field of ['links', 'artifacts']) {
+    if (field in fields && !Array.isArray(fields[field])) report(`field "${field}" must be a list`);
+  }
+  for (const link of (Array.isArray(fields.links) ? fields.links : []) as Link[]) {
+    if (!LINK_TYPES.includes(link.type)) report(`link to "${link.to}" has unknown type "${link.type}"`);
     if (!knownIds.has(link.to)) report(`link to "${link.to}" points to nothing`);
   }
-  for (const artifact of (fields.artifacts as { path: string }[] | null) ?? []) {
+  for (const artifact of (Array.isArray(fields.artifacts) ? fields.artifacts : []) as { path: string }[]) {
     if (!fs.existsSync(path.join(entry.dir, artifact.path))) report(`artifact "${artifact.path}" is missing`);
   }
   if (fields.kind === 'recurring') {

@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from './frontmatter.ts';
-import { listProjects, listTasks } from './store.ts';
 
 export type LogEvent = { project: string; task: string | null; at: string; event: string; detail: string };
 
@@ -9,7 +8,7 @@ const LOG_LINE = /^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) ([^|]+?)(?: \| (.*))?$/;
 
 export function parseLog(text: string, project: string, task: string | null): LogEvent[] {
   return text.split('\n').flatMap(line => {
-    const match = line.match(LOG_LINE);
+    const match = line.replace(/\r$/, '').match(LOG_LINE);
     return match ? [{ project, task, at: match[1], event: match[2].trim(), detail: match[3] ?? '' }] : [];
   });
 }
@@ -35,10 +34,26 @@ function noteEvents(root: string, folder: 'inbox' | 'learnings'): LogEvent[] {
     });
 }
 
+function subfolders(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter(item => item.isDirectory() && !item.name.startsWith('.'))
+    .map(item => item.name)
+    .sort();
+}
+
 export function readAllEvents(root: string): LogEvent[] {
+  const projectsDir = path.join(root, 'projects');
+  const logEvents = subfolders(projectsDir).flatMap(project => {
+    const projectDir = path.join(projectsDir, project);
+    const tasksDir = path.join(projectDir, 'tasks');
+    return [
+      ...parseLog(readLog(projectDir), project, null),
+      ...subfolders(tasksDir).flatMap(task => parseLog(readLog(path.join(tasksDir, task)), project, `${project}/${task}`)),
+    ];
+  });
   return [
-    ...listProjects(root).flatMap(project => parseLog(readLog(project.dir), project.id, null)),
-    ...listTasks(root).flatMap(task => parseLog(readLog(task.dir), task.project, task.id)),
+    ...logEvents,
     ...noteEvents(root, 'inbox'),
     ...noteEvents(root, 'learnings'),
   ].sort((first, second) => first.at.localeCompare(second.at));
