@@ -127,6 +127,7 @@ export function syncSchedules(
         result = launchctl('bootstrap', plistFile);
       }
       if (!result.ok) {
+        fs.rmSync(plistFile);
         failed.push({ label, reason: result.reason });
         continue;
       }

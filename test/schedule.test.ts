@@ -124,6 +124,14 @@ for (const retrySucceeds of [false, true]) {
     assert.equal(wait.mock.calls[0].arguments[3], 1000);
     assert.deepEqual(result.written, retrySucceeds ? [label] : []);
     assert.deepEqual(result.failed, retrySucceeds ? [] : [{ label, reason: 'bootstrap denied' }]);
+    if (!retrySucceeds) {
+      assert.equal(fs.existsSync(path.join(agentsDir, `${label}.plist`)), false);
+      const nextResult = syncSchedules(root, { agentsDir, load: true });
+      assert.deepEqual(nextResult.written, []);
+      assert.deepEqual(nextResult.failed, [{ label, reason: 'bootstrap denied' }]);
+      assert.equal(attempts, 4);
+      assert.equal(fs.existsSync(path.join(agentsDir, `${label}.plist`)), false);
+    }
   });
 }
 
