@@ -12,7 +12,7 @@ const RECORD_FILES = new Set(['readme.md', 'log.md']);
 const DATED_SLUG = /^\d{4}-\d{2}-\d{2}-/;
 
 export type ScanItem = {
-  source: string; group: string; type: 'dir' | 'file'; files: number; bytes: number;
+  source: string; group: string; type: 'dir' | 'file' | 'link'; files: number; bytes: number;
   dateGuess: string; title: string | null; statusLine: string | null; topFiles: string[];
 };
 export type PlanProject = { slug: string; title: string; area: string; status: string; statusReason?: string; started?: string; description?: string };
@@ -55,7 +55,12 @@ function guessDate(name: string, text: string, files: string[]): string {
 }
 
 function describe(target: string, group: string): ScanItem {
-  const isDir = isDirectory(target);
+  const stats = fs.lstatSync(target);
+  if (stats.isSymbolicLink()) return {
+    source: target, group, type: 'link', files: 0, bytes: 0,
+    dateGuess: guessDate(path.basename(target), '', []), title: null, statusLine: null, topFiles: [],
+  };
+  const isDir = stats.isDirectory();
   const files = keptFiles(target);
   const readmeName = isDir ? fs.readdirSync(target).find(name => name.toLowerCase() === 'readme.md') : undefined;
   const textFile = isDir ? (readmeName ? path.join(target, readmeName) : null) : (target.endsWith('.md') ? target : null);
@@ -134,6 +139,7 @@ export function validatePlan(root: string, plan: ImportPlan): string[] {
       if (fs.existsSync(inboxTarget(root, item, source))) problems.push(`${item.source}: inbox/${item.inbox} already exists`);
       continue;
     }
+    catchProblem(problems, item.source, () => assertSlug(item.project ?? '', 'project'));
     const projectExists = item.project && (plannedProjects.has(item.project) || fs.existsSync(path.join(root, 'projects', item.project, 'readme.md')));
     if (!projectExists) problems.push(`${item.source}: project "${item.project}" is not in the plan or the store`);
     catchProblem(problems, item.source, () => assertSlug(item.task!, 'task'));
@@ -251,12 +257,21 @@ function verify(before: Map<string, string>, newPathFor: (relative: string) => s
   return problems;
 }
 
+function importSource<T>(source: string, action: () => T): T {
+  try {
+    return action();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new UserError(`import stopped at ${source}: ${reason}. Targets created so far stay in the store; remove them before running again.`);
+  }
+}
+
 export function applyPlan(root: string, plan: ImportPlan, { dryRun = false } = {}): ImportReport {
   const planProblems = validatePlan(root, plan);
   if (planProblems.length) throw new UserError(`plan has problems:\n${planProblems.map(problem => `  ${problem}`).join('\n')}`);
   const items = [...plan.items].sort((first, second) =>
     Number(!isDirectory(expandHome(first.source))) - Number(!isDirectory(expandHome(second.source))));
-  const before = items.map(item => checksums(expandHome(item.source)));
+  const before = items.map(item => importSource(item.source, () => checksums(expandHome(item.source))));
   const files = before.reduce((total, map) => total + map.size, 0);
   const skippedJunkBytes = items.reduce((total, item) => total + junkBytes(expandHome(item.source)), 0);
   const skippedLinks = items.flatMap(item => sourceLinks(expandHome(item.source)));
@@ -275,36 +290,36 @@ export function applyPlan(root: string, plan: ImportPlan, { dryRun = false } = {
   }
 
   const problems: string[] = [];
-  items.forEach((item, index) => {
-    const source = expandHome(item.source);
-    const sourceIsDir = isDirectory(source);
-    if (item.inbox) {
-      const destination = inboxTarget(root, item, source);
-      copyWithoutJunk(source, destination);
-      const newPathFor = (relative: string) => sourceIsDir ? path.join(destination, relative) : destination;
-      problems.push(...verify(before[index], newPathFor, item.source, new Map()));
-      return;
-    }
-    const taskDir = path.join(root, 'projects', item.project!, 'tasks', item.task!);
-    const originals = new Map<string, string>();
-    if (sourceIsDir) {
-      for (const name of fs.readdirSync(source)) {
-        if (RECORD_FILES.has(name.toLowerCase()) && fs.lstatSync(path.join(source, name)).isFile()) {
-          originals.set(name, fs.readFileSync(path.join(source, name), 'utf8'));
-        }
+  items.forEach((item, index) => importSource(item.source, () => {
+      const source = expandHome(item.source);
+      const sourceIsDir = isDirectory(source);
+      if (item.inbox) {
+        const destination = inboxTarget(root, item, source);
+        copyWithoutJunk(source, destination);
+        const newPathFor = (relative: string) => sourceIsDir ? path.join(destination, relative) : destination;
+        problems.push(...verify(before[index], newPathFor, item.source, new Map()));
+        return;
       }
-      copyWithoutJunk(source, taskDir);
-      const readmeName = [...originals.keys()].find(name => name.toLowerCase() === 'readme.md');
-      writeTaskRecord(item, taskDir, readmeName ? originals.get(readmeName)! : null);
-      const newPathFor = (relative: string) => path.join(taskDir, /^readme\.md$/i.test(relative) ? 'readme.md' : relative);
-      problems.push(...verify(before[index], newPathFor, item.source, originals));
-    } else {
-      const isNewTask = !fs.existsSync(taskDir);
-      copyWithoutJunk(source, path.join(taskDir, path.basename(source)));
-      if (isNewTask) writeTaskRecord(item, taskDir, null);
-      else registerLooseArtifact(item, taskDir, path.basename(source));
-      problems.push(...verify(before[index], relative => path.join(taskDir, relative), item.source, new Map()));
-    }
-  });
+      const taskDir = path.join(root, 'projects', item.project!, 'tasks', item.task!);
+      const originals = new Map<string, string>();
+      if (sourceIsDir) {
+        for (const name of fs.readdirSync(source)) {
+          if (RECORD_FILES.has(name.toLowerCase()) && fs.lstatSync(path.join(source, name)).isFile()) {
+            originals.set(name, fs.readFileSync(path.join(source, name), 'utf8'));
+          }
+        }
+        copyWithoutJunk(source, taskDir);
+        const readmeName = [...originals.keys()].find(name => name.toLowerCase() === 'readme.md');
+        writeTaskRecord(item, taskDir, readmeName ? originals.get(readmeName)! : null);
+        const newPathFor = (relative: string) => path.join(taskDir, /^readme\.md$/i.test(relative) ? 'readme.md' : relative);
+        problems.push(...verify(before[index], newPathFor, item.source, originals));
+      } else {
+        const isNewTask = !fs.existsSync(taskDir);
+        copyWithoutJunk(source, path.join(taskDir, path.basename(source)));
+        if (isNewTask) writeTaskRecord(item, taskDir, null);
+        else registerLooseArtifact(item, taskDir, path.basename(source));
+        problems.push(...verify(before[index], relative => path.join(taskDir, relative), item.source, new Map()));
+      }
+  }));
   return { copied: items.length, files, skippedJunkBytes, skippedLinks, problems };
 }

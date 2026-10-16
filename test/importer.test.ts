@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { makeStore } from './helpers.ts';
-import { initStore, readEntry } from '../src/store.ts';
+import { UserError, initStore, readEntry } from '../src/store.ts';
 import { applyPlan, scanSources, validatePlan, type ImportPlan } from '../src/importer.ts';
 
 type TreeEntry = { path: string; type: 'file' | 'dir' | 'link'; sha256?: string; target?: string };
@@ -201,5 +201,60 @@ test('validate resolves store aliases and refuses sources inside or equal to the
     assert.deepEqual(validatePlan(alias, plan), [`${source}: source and store overlap`]);
     assert.throws(() => applyPlan(alias, plan), /overlap/);
     assert.deepEqual(snapshotTree(root), before);
+  }
+});
+
+
+test('validate refuses project traversal without writing outside the store', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), '2b-traversal-'));
+  const root = path.join(base, 'store');
+  initStore(root);
+  const victim = path.join(base, 'victim');
+  fs.mkdirSync(victim);
+  fs.writeFileSync(path.join(victim, 'readme.md'), 'Original');
+  const source = path.join(base, 'note.txt');
+  fs.writeFileSync(source, 'Note');
+  const plan: ImportPlan = { projects: [], items: [{ source, project: '../../victim', task: '2026-10-16-copy' }] };
+  const before = snapshotTree(base);
+  assert.throws(() => applyPlan(root, plan), /project.*must/);
+  assert.deepEqual(snapshotTree(base), before);
+});
+
+test('scan lists top-level links without following live or broken targets', () => {
+  const sources = makeSources();
+  fs.symlinkSync(sources.alpha, path.join(sources.ai, 'linked-folder'));
+  fs.symlinkSync(path.join(sources.ai, 'missing.md'), path.join(sources.ai, 'broken.md'));
+  const links = scanSources([sources.ai]).filter(item => item.type === 'link');
+  assert.equal(links.length, 2);
+  for (const link of links) {
+    assert.equal(link.files, 0);
+    assert.equal(link.bytes, 0);
+    assert.equal(link.title, null);
+    assert.deepEqual(link.topFiles, []);
+  }
+});
+
+test('import reports the failed source and retained targets after a copy failure', context => {
+  const root = makeStore();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), '2b-unreadable-'));
+  const first = path.join(base, 'first.txt');
+  const second = path.join(base, 'second.txt');
+  fs.writeFileSync(first, 'First');
+  fs.writeFileSync(second, 'Second');
+  const copy = fs.cpSync;
+  context.mock.method(fs, 'cpSync', (source, destination, options) => {
+    if (source === second) fs.chmodSync(second, 0o000);
+    return copy(source, destination, options);
+  });
+  try {
+    assert.throws(() => applyPlan(root, { projects: [], items: [
+      { source: first, inbox: '2026-10-16-first' },
+      { source: second, inbox: '2026-10-16-second' },
+    ] }), error => error instanceof UserError
+      && error.message.startsWith(`import stopped at ${second}:`)
+      && error.message.endsWith('Targets created so far stay in the store; remove them before running again.'));
+    assert.equal(fs.readFileSync(path.join(root, 'inbox', '2026-10-16-first.txt'), 'utf8'), 'First');
+  } finally {
+    fs.chmodSync(second, 0o600);
   }
 });
