@@ -79,7 +79,11 @@ export function assertOneOf(value: string, allowed: string[], what: string): voi
 }
 
 export function assertDay(value: string, what: string, allowUnknown = true): void {
-  if (DATE.test(value) || (allowUnknown && (value === 'unknown' || value === ''))) return;
+  if (allowUnknown && (value === 'unknown' || value === '')) return;
+  if (DATE.test(value)) {
+    const date = new Date(value + 'T00:00:00Z');
+    if (!Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value) return;
+  }
   throw new UserError(`${what} must be yyyy-mm-dd${allowUnknown ? ' or "unknown"' : ''}`);
 }
 
@@ -168,6 +172,7 @@ export type TaskOptions = {
 };
 
 export function createTask(root: string, project: string, slug: string, options: TaskOptions = {}): Entry {
+  assertSlug(project, 'project');
   assertSlug(slug, 'task');
   const projectDir = path.join(root, 'projects', project);
   if (!fs.existsSync(path.join(projectDir, 'readme.md'))) throw new UserError(`project "${project}" does not exist`);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { makeStore } from './helpers.ts';
 import {
   createProject, createTask, resolve, setStatus, setField, addLink, addPr,
-  reverseLinks, addArtifact, createNote, readEntry, localDate, UserError,
+  reverseLinks, addArtifact, createNote, readEntry, localDate, UserError, assertDay,
 } from '../src/store.ts';
 
 const readLog = (dir: string) => fs.readFileSync(path.join(dir, 'log.md'), 'utf8');
@@ -102,4 +102,24 @@ test('bad names are refused', () => {
   const root = makeStore();
   assert.throws(() => createProject(root, 'Topic Analysis', { area: 'work' }), /lowercase/);
   assert.throws(() => createProject(root, 'p', { area: 'fun' }), /work, personal/);
+});
+
+
+test('date fields reject invalid calendar dates and keep allowed empty values', () => {
+  const root = makeStore();
+  const project = createProject(root, 'p', { area: 'work' });
+  const task = createTask(root, 'p', 't');
+  assert.throws(() => setField(task, 'due', '2026-13-45'), /yyyy-mm-dd/);
+  assert.throws(() => setField(task, 'started', '2026-02-29'), /yyyy-mm-dd/);
+  assert.throws(() => setField(project, 'deadline', '2026-04-31'), /yyyy-mm-dd/);
+  assert.doesNotThrow(() => assertDay('2024-02-29', 'date'));
+  assert.doesNotThrow(() => assertDay('unknown', 'date'));
+  assert.doesNotThrow(() => assertDay('', 'date'));
+  assert.throws(() => assertDay('unknown', 'started', false), /yyyy-mm-dd/);
+  assert.throws(() => assertDay('', 'started', false), /yyyy-mm-dd/);
+});
+
+test('task creation rejects an invalid project name before looking up its path', () => {
+  const root = makeStore();
+  assert.throws(() => createTask(root, '../x', 't'), /lowercase/);
 });
