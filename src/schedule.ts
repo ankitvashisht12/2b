@@ -71,24 +71,37 @@ ${intervalsXml}
 `;
 }
 
-function launchctl(action: 'bootstrap' | 'bootout', plistFile: string): void {
-  spawnSync('launchctl', [action, `gui/${process.getuid?.() ?? 501}`, plistFile], { stdio: 'ignore' });
+function launchctl(action: 'bootstrap' | 'bootout', plistFile: string): { ok: boolean; reason: string } {
+  const result = spawnSync('launchctl', [action, `gui/${process.getuid?.() ?? 501}`, plistFile], { encoding: 'utf8' });
+  const ok = result.status === 0 && !result.error;
+  return {
+    ok,
+    reason: ok ? '' : result.stderr?.trim() || result.error?.message || `launchctl ${action} failed: ${result.status ?? result.signal}`,
+  };
 }
 
 export function syncSchedules(
   root: string,
   { agentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents'), load = true } = {},
-): { written: string[]; removed: string[] } {
+): { written: string[]; removed: string[]; failed: { label: string; reason: string }[] } {
   const logsDir = path.join(os.homedir(), 'Library', 'Logs', '2b');
   fs.mkdirSync(agentsDir, { recursive: true });
   if (load) fs.mkdirSync(logsDir, { recursive: true });
   const wanted = new Map<string, string>();
+  const failed: { label: string; reason: string }[] = [];
   for (const task of listTasks(root)) {
     if (task.fields.kind !== 'recurring' || task.fields.status !== 'doing') continue;
     const label = labelFor(task.id);
     const environment = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.homedir(), TWOB_HOME: root };
     const programArguments = [...NODE_COMMAND, 'run', task.id];
-    wanted.set(label, plistFor(label, programArguments, parseEvery(String(task.fields.every)), environment, path.join(logsDir, `${label}.log`)));
+    let intervals: CalendarInterval[];
+    try {
+      intervals = parseEvery(String(task.fields.every));
+    } catch (error) {
+      failed.push({ label, reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    wanted.set(label, plistFor(label, programArguments, intervals, environment, path.join(logsDir, `${label}.log`)));
   }
   const written: string[] = [];
   const removed: string[] = [];
@@ -97,6 +110,7 @@ export function syncSchedules(
     const label = fileName.slice(0, -'.plist'.length);
     if (wanted.has(label)) continue;
     const plistFile = path.join(agentsDir, fileName);
+    if (!fs.readFileSync(plistFile, 'utf8').includes(`<key>TWOB_HOME</key><string>${xmlEscape(root)}</string>`)) continue;
     if (load) launchctl('bootout', plistFile);
     fs.rmSync(plistFile);
     removed.push(label);
@@ -106,10 +120,20 @@ export function syncSchedules(
     if (fs.existsSync(plistFile) && fs.readFileSync(plistFile, 'utf8') === plist) continue;
     if (load && fs.existsSync(plistFile)) launchctl('bootout', plistFile);
     fs.writeFileSync(plistFile, plist);
-    if (load) launchctl('bootstrap', plistFile);
+    if (load) {
+      let result = launchctl('bootstrap', plistFile);
+      if (!result.ok) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+        result = launchctl('bootstrap', plistFile);
+      }
+      if (!result.ok) {
+        failed.push({ label, reason: result.reason });
+        continue;
+      }
+    }
     written.push(label);
   }
-  return { written, removed };
+  return { written, removed, failed };
 }
 
 export function agentArgv(agent: string, prompt: string, root: string): string[] {
@@ -124,12 +148,12 @@ export function agentArgv(agent: string, prompt: string, root: string): string[]
 
 export function buildPrompt(root: string, task: Entry): string {
   const parts = [
+    `You run as the recurring 2b task "${task.id}". Today is ${localDate()}. Use the 2b CLI for every change to the store.`,
+    '',
     task.body.trim(),
     '',
     'Rules:',
     formatRules(rulesFor(root, task)),
-    '',
-    `You run as the recurring 2b task "${task.id}". Today is ${localDate()}. Use the 2b CLI for every change to the store.`,
   ];
   if (task.fields['last-result'] === 'error' && task.fields['last-log']) {
     const lastLog = path.join(task.dir, String(task.fields['last-log']));
@@ -150,13 +174,24 @@ export function runTask(root: string, task: Entry, { timeoutMs = DEFAULT_TIMEOUT
     : agentArgv(String(task.fields.agent ?? 'claude'), buildPrompt(root, task), root);
   const runsDir = path.join(task.dir, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
-  const logFile = path.join(runsDir, `${fileTimestamp()}.log`);
+  const logName = `${fileTimestamp()}-${String(Date.now() % 1000).padStart(3, '0')}`;
+  let logFile = path.join(runsDir, `${logName}.log`);
   const result = spawnSync(argv[0], argv.slice(1), {
-    cwd: root, encoding: 'utf8', timeout: timeoutMs, env: { ...process.env, TWOB_HOME: root },
+    cwd: root, encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, TWOB_HOME: root },
   });
   const ok = result.status === 0 && !result.error;
   const failure = result.error ? `error: ${result.error.message}\n` : '';
-  fs.writeFileSync(logFile, `$ ${argv.join(' ')}\n\n${result.stdout ?? ''}\n${result.stderr ?? ''}\n${failure}exit: ${result.status ?? result.signal}\n`);
+  const log = `$ ${argv.join(' ')}\n\n${result.stdout ?? ''}\n${result.stderr ?? ''}\n${failure}exit: ${result.status ?? result.signal}\n`;
+  for (let suffix = 1; ; suffix += 1) {
+    try {
+      fs.writeFileSync(logFile, log, { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      logFile = path.join(runsDir, `${logName}-${suffix}.log`);
+    }
+  }
 
   const fresh = readEntry('task', task.project, task.dir);
   fresh.fields['last-run'] = localDateTime();
