@@ -38,8 +38,13 @@ export function storeRoot(): string {
   if (process.env.TWOB_HOME) return path.resolve(expandHome(process.env.TWOB_HOME));
   const configFile = path.join(os.homedir(), '.config', '2b', 'config.json');
   if (fs.existsSync(configFile)) {
-    const configuredHome = JSON.parse(fs.readFileSync(configFile, 'utf8')).home;
-    if (configuredHome) return path.resolve(expandHome(configuredHome));
+    try {
+      const configuredHome = JSON.parse(fs.readFileSync(configFile, 'utf8')).home;
+      if (configuredHome) return path.resolve(expandHome(configuredHome));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new UserError(`~/.config/2b/config.json is not valid: ${reason}`);
+    }
   }
   return path.join(os.homedir(), 'obsidian', '2b');
 }

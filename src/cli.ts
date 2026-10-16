@@ -43,7 +43,7 @@ Read commands accept --json. Put -- before text that starts with a dash.`;
 type Options = Record<string, string | boolean | undefined>;
 let options: Options = {};
 let rest: string[] = [];
-const root = store.storeRoot();
+let root: string;
 
 function output(data: unknown, text: string): void {
   console.log(options.json ? JSON.stringify(data, null, 2) : text);
@@ -91,7 +91,10 @@ function formatWeek(start: string, end: string, events: LogEvent[]): string {
 }
 
 function syncIfRecurring(entry: Entry): void {
-  if (entry.fields.kind === 'recurring') syncSchedules(root);
+  if (entry.fields.kind !== 'recurring') return;
+  const { failed } = syncSchedules(root);
+  for (const failure of failed) console.error(`Failed: ${failure.label} — ${failure.reason}`);
+  if (failed.length) process.exitCode = 1;
 }
 
 const commands: Record<string, () => void | Promise<void>> = {
@@ -247,16 +250,19 @@ const commands: Record<string, () => void | Promise<void>> = {
 
   rule() {
     const [action, scope, ...words] = rest;
-    const file = need(scope, 'global or a project/task') === 'global' ? rulesFile(root, null) : rulesFile(root, store.resolve(root, scope));
+    const entry = need(scope, 'global or a project/task') === 'global' ? null : store.resolve(root, scope);
+    const file = rulesFile(root, entry);
     const ruleText = words.join(' ');
     if (action === 'add') {
       if (text('key')) assertRuleKey(text('key')!);
       addRule(file, text('key') ?? null, need(ruleText, 'rule text'));
+      if (entry) store.appendLog(entry.dir, `rule add${text('key') ? ` [${text('key')}]` : ''}`, ruleText);
       output({ file }, `Rule saved in ${path.relative(root, file)}`);
       return;
     }
     if (action === 'rm') {
       if (!removeRule(file, need(ruleText, 'rule key or text'))) throw new store.UserError(`no rule "${ruleText}" in ${path.relative(root, file)}`);
+      if (entry) store.appendLog(entry.dir, 'rule rm', ruleText);
       output({ file }, `Rule removed from ${path.relative(root, file)}`);
       return;
     }
@@ -331,7 +337,7 @@ const commands: Record<string, () => void | Promise<void>> = {
         throw new store.UserError(`cannot read plan ${planFile}: ${reason}`);
       }
       const report = applyPlan(root, plan, { dryRun: Boolean(options['dry-run']) });
-      output(report, `Items copied: ${report.copied}. Files: ${report.files}. Junk skipped: ${Math.round(report.skippedJunkBytes / 1e6)} MB.${report.problems.length ? `\nProblems:\n${report.problems.join('\n')}` : ' Verified.'}`);
+      output(report, `${options['dry-run'] ? `Would copy: ${report.copied} items` : `Items copied: ${report.copied}`}. Files: ${report.files}. Junk skipped: ${Math.round(report.skippedJunkBytes / 1e6)} MB.${report.problems.length ? `\nProblems:\n${report.problems.join('\n')}` : ' Verified.'}`);
       if (!options.json && report.skippedLinks?.length) {
         console.log(`Links skipped: ${report.skippedLinks.length}\n${report.skippedLinks.map(link => `  ${link}`).join('\n')}`);
       }
@@ -360,6 +366,7 @@ async function main(): Promise<void> {
   }
   const handler = commands[command];
   if (!handler) throw new store.UserError(`unknown command "${command}" (see "2b help")`);
+  root = store.storeRoot();
   if (!['init', 'notify'].includes(command) && !fs.existsSync(path.join(root, 'projects'))) {
     throw new store.UserError(`no store at ${root}; run "2b init"`);
   }

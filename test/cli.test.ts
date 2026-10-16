@@ -155,3 +155,67 @@ test('unexpected file errors also return one error line', () => {
   assert.match(result.err, /^2b: [^\r\n]+$/);
   assert.match(result.err, /EISDIR/);
 });
+
+
+test('recurring writes report sync failures and keep saved records', () => {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), '2b-fake-bin-'));
+  fs.writeFileSync(path.join(fakeBin, 'launchctl'), '#!/bin/sh\necho "test launchctl failure" >&2\nexit 7\n', { mode: 0o755 });
+  const twob = makeRunner({ PATH: fakeBin });
+  assert.equal(twob('init').code, 0);
+  assert.equal(twob('new', 'project', 'ops', '--area', 'work').code, 0);
+  for (const args of [
+    ['new', 'task', 'ops', 'job', '--every', 'hourly', '--run', 'command', '--command', 'true'],
+    ['status', 'job', 'doing'],
+    ['set', 'job', 'every', 'daily 10:00'],
+  ]) {
+    const result = twob(...args);
+    assert.equal(result.code, 1, result.err);
+    assert.match(result.err, /Failed: com\.2b\.ops\.[^\n]+ — test launchctl failure/);
+    assert.equal(JSON.parse(twob('show', 'job', '--json').out).kind, 'recurring');
+  }
+  assert.equal(JSON.parse(twob('show', 'job', '--json').out).every, 'daily 10:00');
+});
+
+test('scoped rule changes append entry logs', () => {
+  const twob = makeRunner();
+  twob('init');
+  twob('new', 'project', 'sample', '--area', 'work');
+  twob('new', 'task', 'sample', 'job');
+  for (const scope of ['sample', 'job']) {
+    assert.equal(twob('rule', 'add', scope, '--key', 'check', 'Check output.').code, 0);
+    assert.equal(twob('rule', 'rm', scope, 'check').code, 0);
+    const log = JSON.parse(twob('show', scope, '--json').out).recentLog.join('\n');
+    assert.match(log, /rule add \[check\] \| Check output\./);
+    assert.match(log, /rule rm \| check/);
+  }
+});
+
+test('import dry run says would copy and creates no target', () => {
+  const twob = makeRunner();
+  twob('init');
+  const source = path.join(fs.mkdtempSync(path.join(os.tmpdir(), '2b-dry-source-')), 'note.md');
+  fs.writeFileSync(source, 'Note');
+  const planFile = path.join(twob.root, 'plan.json');
+  fs.writeFileSync(planFile, JSON.stringify({ projects: [], items: [{ source, inbox: '2026-10-16-note' }] }));
+  const result = twob('import', 'apply', planFile, '--dry-run');
+  assert.equal(result.code, 0);
+  assert.match(result.out, /^Would copy: 1 items/);
+  assert.equal(fs.existsSync(path.join(twob.root, 'inbox', '2026-10-16-note.md')), false);
+});
+
+test('invalid config gives one error line while help still works', () => {
+  const twob = makeRunner();
+  const configDir = path.join(twob.root, '.config', '2b');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'config.json'), '{');
+  const run = (...args: string[]) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', CLI, ...args], {
+    encoding: 'utf8', env: { ...process.env, HOME: twob.root, TWOB_HOME: '', TWOB_DEBUG: '' },
+  });
+  for (const args of [[], ['help'], ['--help']]) {
+    assert.equal(run(...args).status, 0);
+    assert.equal(run(...args).stderr, '');
+  }
+  const result = run('ls');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr.trim(), /^2b: ~\/\.config\/2b\/config\.json is not valid: [^\r\n]+$/);
+});
