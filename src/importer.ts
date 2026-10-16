@@ -22,7 +22,7 @@ export type PlanItem = {
   repo?: string; branch?: string; prs?: string[]; artifacts?: PlanArtifact[];
 };
 export type ImportPlan = { projects: PlanProject[]; items: PlanItem[] };
-export type ImportReport = { copied: number; files: number; skippedJunkBytes: number; problems: string[] };
+export type ImportReport = { copied: number; files: number; skippedJunkBytes: number; skippedLinks: string[]; problems: string[] };
 
 const isJunkFile = (name: string) => name.endsWith('.map') || name === '.DS_Store';
 const isJunk = (target: string) => JUNK_FOLDERS.has(path.basename(target)) || isJunkFile(path.basename(target));
@@ -96,6 +96,8 @@ function inboxTarget(root: string, item: PlanItem, source: string): string {
 
 export function validatePlan(root: string, plan: ImportPlan): string[] {
   const problems: string[] = [];
+  const storePath = fs.realpathSync(root);
+  const containsPath = (parent: string, child: string) => parent === child || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
   const plannedProjects = new Set(plan.projects.map(project => project.slug));
   for (const project of plan.projects) {
     catchProblem(problems, project.slug, () => {
@@ -108,8 +110,18 @@ export function validatePlan(root: string, plan: ImportPlan): string[] {
   const folderTargets = new Set<string>();
   for (const item of plan.items) {
     const source = expandHome(item.source);
-    if (!fs.existsSync(source)) {
+    const sourceStats = fs.lstatSync(source, { throwIfNoEntry: false });
+    if (!sourceStats) {
       problems.push(`${item.source}: source does not exist`);
+      continue;
+    }
+    if (sourceStats.isSymbolicLink()) {
+      problems.push(`${item.source}: source is a symbolic link`);
+      continue;
+    }
+    const sourcePath = fs.realpathSync(source);
+    if (containsPath(storePath, sourcePath) || containsPath(sourcePath, storePath)) {
+      problems.push(`${item.source}: source and store overlap`);
       continue;
     }
     if (Boolean(item.inbox) === Boolean(item.task)) {
@@ -157,11 +169,18 @@ function junkBytes(target: string): number {
   }, 0);
 }
 
+function sourceLinks(target: string): string[] {
+  const stats = fs.lstatSync(target);
+  if (stats.isSymbolicLink()) return [path.resolve(target)];
+  if (!stats.isDirectory() || JUNK_FOLDERS.has(path.basename(target))) return [];
+  return fs.readdirSync(target).flatMap(name => sourceLinks(path.join(target, name)));
+}
+
 function copyWithoutJunk(source: string, destination: string): void {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.cpSync(source, destination, {
     recursive: true, preserveTimestamps: true, errorOnExist: true, force: false,
-    filter: candidate => candidate === source || !isJunk(candidate),
+    filter: candidate => !fs.lstatSync(candidate).isSymbolicLink() && (candidate === source || !isJunk(candidate)),
   });
 }
 
@@ -240,7 +259,8 @@ export function applyPlan(root: string, plan: ImportPlan, { dryRun = false } = {
   const before = items.map(item => checksums(expandHome(item.source)));
   const files = before.reduce((total, map) => total + map.size, 0);
   const skippedJunkBytes = items.reduce((total, item) => total + junkBytes(expandHome(item.source)), 0);
-  if (dryRun) return { copied: items.length, files, skippedJunkBytes, problems: [] };
+  const skippedLinks = items.flatMap(item => sourceLinks(expandHome(item.source)));
+  if (dryRun) return { copied: items.length, files, skippedJunkBytes, skippedLinks, problems: [] };
 
   for (const project of plan.projects) {
     if (fs.existsSync(path.join(root, 'projects', project.slug, 'readme.md'))) continue;
@@ -269,7 +289,9 @@ export function applyPlan(root: string, plan: ImportPlan, { dryRun = false } = {
     const originals = new Map<string, string>();
     if (sourceIsDir) {
       for (const name of fs.readdirSync(source)) {
-        if (RECORD_FILES.has(name.toLowerCase())) originals.set(name, fs.readFileSync(path.join(source, name), 'utf8'));
+        if (RECORD_FILES.has(name.toLowerCase()) && fs.lstatSync(path.join(source, name)).isFile()) {
+          originals.set(name, fs.readFileSync(path.join(source, name), 'utf8'));
+        }
       }
       copyWithoutJunk(source, taskDir);
       const readmeName = [...originals.keys()].find(name => name.toLowerCase() === 'readme.md');
@@ -284,5 +306,5 @@ export function applyPlan(root: string, plan: ImportPlan, { dryRun = false } = {
       problems.push(...verify(before[index], relative => path.join(taskDir, relative), item.source, new Map()));
     }
   });
-  return { copied: items.length, files, skippedJunkBytes, problems };
+  return { copied: items.length, files, skippedJunkBytes, skippedLinks, problems };
 }
