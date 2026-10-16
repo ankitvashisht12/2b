@@ -60,6 +60,8 @@ function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
     if (!fs.existsSync(path.join(entry.dir, artifact.path))) report(`artifact "${artifact.path}" is missing`);
   }
   if (fields.kind === 'recurring') {
+    if (fields.run === 'command' && !String(fields.command ?? '').trim()) report('no command set');
+    if (fields.run === 'agent' && !entry.body.trim()) report('agent task has an empty body');
     try {
       parseEvery(String(fields.every));
     } catch (error) {

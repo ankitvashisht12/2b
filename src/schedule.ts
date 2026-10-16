@@ -142,7 +142,7 @@ export function agentArgv(agent: string, prompt: string, root: string): string[]
   const home = os.homedir();
   return [
     'claude', '-p', prompt,
-    '--allowedTools', 'Bash(2b:*)', 'Bash(sqlite3:*)', 'Read', 'Glob', 'Grep',
+    '--allowedTools', 'Bash(2b:*)', 'Read', 'Glob', 'Grep',
     '--add-dir', root, path.join(home, '.claude', 'projects'), path.join(home, '.codex', 'sessions'), path.join(home, '.t3', 'userdata'),
   ];
 }
@@ -177,10 +177,13 @@ export function runTask(root: string, task: Entry, { timeoutMs = DEFAULT_TIMEOUT
   fs.mkdirSync(runsDir, { recursive: true });
   const logName = `${fileTimestamp()}-${String(Date.now() % 1000).padStart(3, '0')}`;
   let logFile = path.join(runsDir, `${logName}.log`);
-  const result = spawnSync(argv[0], argv.slice(1), {
-    cwd: root, encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, TWOB_HOME: root },
-  });
+  const missingCommand = task.fields.run === 'command' && !String(task.fields.command ?? '').trim();
+  const result = missingCommand
+    ? { status: 1, stdout: '', stderr: 'no command set', error: undefined, signal: null }
+    : spawnSync(argv[0], argv.slice(1), {
+      cwd: root, encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, TWOB_HOME: root },
+    });
   const ok = result.status === 0 && !result.error;
   const failure = result.error ? `error: ${result.error.message}\n` : '';
   const log = `$ ${argv.join(' ')}\n\n${result.stdout ?? ''}\n${result.stderr ?? ''}\n${failure}exit: ${result.status ?? result.signal}\n`;

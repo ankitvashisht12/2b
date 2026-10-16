@@ -1,3 +1,4 @@
+import { checkStore } from '../src/check.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { makeStore } from './helpers.ts';
-import { createProject, createTask, readEntry, setStatus, localDate } from '../src/store.ts';
+import { createProject, createTask, readEntry, setStatus, localDate, writeEntry } from '../src/store.ts';
 import { addRule, rulesFile } from '../src/rules.ts';
 import { parseEvery, syncSchedules, runTask, buildPrompt, labelFor, plistFor } from '../src/schedule.ts';
 
@@ -177,4 +178,43 @@ test('run preserves logs when timestamps collide', context => {
   assert.equal(fs.readFileSync(first.logFile, 'utf8'), firstLog);
   assert.match(fs.readFileSync(second.logFile, 'utf8'), /second/);
   assert.match(fs.readFileSync(third.logFile, 'utf8'), /third/);
+});
+
+
+test('claude agent allows only the CLI and read tools', context => {
+  const root = makeStore();
+  createProject(root, 'ops', { area: 'personal' });
+  const task = createTask(root, 'ops', 'agent', { every: 'hourly', body: 'Check status.' });
+  context.mock.method(childProcess, 'spawnSync', (command, args) => {
+    assert.equal(command, 'claude');
+    assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--add-dir')), ['Bash(2b:*)', 'Read', 'Glob', 'Grep']);
+    assert.ok(!args.join(' ').includes('sqlite3'));
+    return { status: 0, stdout: '', stderr: '' };
+  });
+  syncBuiltinESMExports();
+  context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal(runTask(root, task).ok, true);
+});
+
+test('empty command fails without launching a shell and check reports empty jobs', context => {
+  const root = makeStore();
+  createProject(root, 'ops', { area: 'personal' });
+  context.mock.method(childProcess, 'spawnSync', () => { throw new Error('must not launch'); });
+  syncBuiltinESMExports();
+  context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports(); });
+  for (const command of [null, '', '   ']) {
+    const task = createTask(root, 'ops', `empty-${command === null ? 'null' : command.length}`, { every: 'hourly', run: 'command', command: 'true' });
+    task.fields.command = command;
+    writeEntry(task);
+    const result = runTask(root, task);
+    assert.equal(result.ok, false);
+    assert.match(fs.readFileSync(result.logFile, 'utf8'), /no command set/);
+    assert.equal(readEntry('task', 'ops', task.dir).fields['last-result'], 'error');
+  }
+  const agent = createTask(root, 'ops', 'empty-agent', { every: 'hourly', body: 'Check.' });
+  agent.body = '  \n';
+  writeEntry(agent);
+  const problems = checkStore(root).join('\n');
+  assert.match(problems, /no command set/);
+  assert.match(problems, /empty-agent.*empty body/);
 });
