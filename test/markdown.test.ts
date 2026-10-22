@@ -7,9 +7,11 @@ test('ATX headings have stable unique slugs at all six levels', () => {
   assert.match(html, /<h1 id="hello-world">Hello, world!<\/h1>/);
   assert.match(html, /<h2 id="hello-world-2">/);
   for (const level of [3, 4, 5, 6]) assert.match(html, new RegExp(`<h${level} id="`));
+  assert.equal(renderMarkdown('# Same\n# Same-2\n> # Same\n\n- # Same\n\n# Same-2\n# Same'), '<h1 id="same">Same</h1>\n<h1 id="same-2">Same-2</h1>\n<blockquote>\n<h1 id="same-3">Same</h1>\n</blockquote>\n<ul>\n<li><h1 id="same-4">Same</h1></li>\n</ul>\n<h1 id="same-2-2">Same-2</h1>\n<h1 id="same-5">Same</h1>');
 });
 test('paragraphs and line breaks', () => {
   assert.equal(renderMarkdown('first\nsecond\n\nthird'), '<p>first<br>second</p>\n<p>third</p>');
+  assert.equal(renderMarkdown('first  \nsecond \nthird   \nfourth  end   '), '<p>first<br>second <br>third<br>fourth  end   </p>');
 });
 test('emphasis, strong, strike, and nested inline formatting', () => {
   assert.equal(renderMarkdown('*one* _two_ **three** __four__ ~~five~~ **bold *inner***'), '<p><em>one</em> <em>two</em> <strong>three</strong> <strong>four</strong> <del>five</del> <strong>bold <em>inner</em></strong></p>');
@@ -161,6 +163,10 @@ test('size limits include their boundary and count UTF-8 bytes', () => {
 const largeDocumentPrefix = '# Heading\n\n<script>&"\'</script>\n';
 const largeDocumentPadding = 'x'.repeat(600 * 1024 - largeDocumentPrefix.length);
 const performanceCases = [
+  { name: '16,000 duplicate headings', source: '# Same\n'.repeat(16000), expected: Array.from({ length: 16000 }, (_, headingNumber) => '<h1 id="same' + (headingNumber ? '-' + (headingNumber + 1) : '') + '">Same</h1>').join('\n') },
+  { name: 'paragraph with 32,000 spaces', source: 'before' + ' '.repeat(32000) + 'after', expected: '<p>before' + ' '.repeat(32000) + 'after</p>' },
+  { name: 'failed title with 32,000 trailing spaces', source: '[x](safe "title"' + ' '.repeat(32000) + 'x)', expected: '<p>[x](safe &quot;title&quot;' + ' '.repeat(32000) + 'x)</p>' },
+  { name: 'autolink with 32,000 internal punctuation marks', source: 'https://example.com/' + '.'.repeat(32000) + 'x.,;:!?', expected: '<p><a href="https://example.com/' + '.'.repeat(32000) + 'x" rel="noopener noreferrer" target="_blank">https://example.com/' + '.'.repeat(32000) + 'x</a>.,;:!?</p>' },
   { name: 'heading with 3,200 spaces', source: '# a' + ' '.repeat(3200) + 'x', expected: '<h1 id="a-x">a' + ' '.repeat(3200) + 'x</h1>' },
   { name: 'email with 40,000 dots', source: '<a@' + '.'.repeat(40000) + ' ', expected: '<p>&lt;a@' + '.'.repeat(40000) + ' </p>' },
   { name: '80,000 unmatched backticks', source: '`'.repeat(80000), expected: '<pre><code></code></pre>' },

@@ -215,7 +215,11 @@ function inlineTokens(source: string, baseUrl: string, depth: number, allowLinks
       const dot = candidate.lastIndexOf('.');
       const email = at > 0 && at === candidate.lastIndexOf('@') && dot > at && dot < candidate.length - 1;
       if ((!angle || source[end] === '>') && (/^(?:https?:\/\/|mailto:)/i.test(candidate) || (angle && email))) {
-        if (!angle) candidate = candidate.replace(/[.,;:!?]+$/, '');
+        if (!angle) {
+          let candidateEnd = candidate.length;
+          while (candidateEnd > 0 && '.,;:!?'.includes(candidate[candidateEnd - 1])) candidateEnd--;
+          candidate = candidate.slice(0, candidateEnd);
+        }
         const safe = safeUrl(email && !/^[a-z]+:/i.test(candidate) ? `mailto:${candidate}` : candidate, baseUrl);
         if (safe) {
           position = angle ? end + 1 : start + candidate.length;
@@ -338,7 +342,23 @@ function headingAt(line: string): { level: number; content: string } | null {
   return { level, content: line.slice(position, end) };
 }
 
-function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0): string {
+function removeHardBreakSpaces(source: string): string {
+  const segments: string[] = [];
+  let segmentStart = 0;
+  for (let position = 0; position < source.length; position++) {
+    if (source[position] !== ' ') continue;
+    const spaceStart = position;
+    while (source[position] === ' ') position++;
+    if (position - spaceStart >= 2 && source[position] === '\n') {
+      segments.push(source.slice(segmentStart, spaceStart));
+      segmentStart = position;
+    }
+  }
+  segments.push(source.slice(segmentStart));
+  return segments.join('');
+}
+
+function blocks(lines: string[], baseUrl: string, slugCounts: Map<string, number>, depth = 0): string {
   if (depth > 40) return `<pre>${escapeHtml(lines.join('\n'))}</pre>`;
   const output: string[] = [];
   let position = 0;
@@ -365,10 +385,11 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
     const heading = headingAt(line);
     if (heading) {
       const slugBase = unescapeMarkdown(heading.content).toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
-      let slug = slugBase;
-      let suffix = 2;
-      while (slugs.has(slug)) slug = `${slugBase}-${suffix++}`;
-      slugs.add(slug);
+      let suffix = slugCounts.get(slugBase) ?? 1;
+      let slug = suffix === 1 ? slugBase : `${slugBase}-${suffix}`;
+      while (slugCounts.has(slug)) slug = `${slugBase}-${++suffix}`;
+      slugCounts.set(slugBase, suffix + 1);
+      slugCounts.set(slug, 2);
       output.push(`<h${heading.level} id="${escapeHtml(slug)}">${inline(heading.content, baseUrl)}</h${heading.level}>`);
       position++;
       continue;
@@ -377,7 +398,7 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
     if (/^ {0,3}>/.test(line)) {
       const quote: string[] = [];
       while (position < lines.length && /^ {0,3}>/.test(lines[position])) quote.push(lines[position++].replace(/^ {0,3}> ?/, ''));
-      output.push(`<blockquote>\n${blocks(quote, baseUrl, slugs, depth + 1)}\n</blockquote>`);
+      output.push(`<blockquote>\n${blocks(quote, baseUrl, slugCounts, depth + 1)}\n</blockquote>`);
       continue;
     }
     const list = listPattern.exec(line);
@@ -404,7 +425,7 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
         }
         const task = /^\[([ xX])\]\s+(.*)$/.exec(itemLines[0]);
         if (task) itemLines[0] = task[2];
-        let content = blocks(itemLines, baseUrl, slugs, depth + 1).replace(/^<p>([\s\S]*?)<\/p>/, '$1');
+        let content = blocks(itemLines, baseUrl, slugCounts, depth + 1).replace(/^<p>([\s\S]*?)<\/p>/, '$1');
         if (task) content = `<input type="checkbox" disabled="disabled"${task[1].toLowerCase() === 'x' ? ' checked="checked"' : ''}> ${content}`;
         items.push(`<li>${content}</li>`);
       }
@@ -425,7 +446,7 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
     position++;
     while (position < lines.length && !startsBlock(position)) paragraph.push(lines[position++]);
     const text = paragraph.join('\n');
-    output.push(`<p>${Buffer.byteLength(text, 'utf8') > maximumInlineBytes ? escapeHtml(text) : inline(text.replace(/ {2,}\n/g, '\n'), baseUrl)}</p>`);
+    output.push(`<p>${Buffer.byteLength(text, 'utf8') > maximumInlineBytes ? escapeHtml(text) : inline(removeHardBreakSpaces(text), baseUrl)}</p>`);
   }
   return output.join('\n');
 }
@@ -440,7 +461,7 @@ export function renderMarkdown(source: string, options: { baseUrl?: string } = {
       const closing = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)$/.test(line));
       if (closing > 0) lines.splice(0, closing + 1);
     }
-    return blocks(lines, baseUrl, new Set());
+    return blocks(lines, baseUrl, new Map());
   } catch {
     return `<pre>${escapeHtml(typeof source === 'string' ? source : '')}</pre>`;
   }
