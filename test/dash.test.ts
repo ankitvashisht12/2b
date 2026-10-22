@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { performance } from 'node:perf_hooks';
 import type { AddressInfo } from 'node:net';
 import { createProject, createTask, createNote, appendLog, localDate, writeEntry } from '../src/store.ts';
 import { openDashboard, startDashboard } from '../src/dash.ts';
@@ -51,6 +52,83 @@ test('GET state returns summaries, range events, jobs, defaults, and legacy week
   const legacy = await (await get('/api/state?week=2026-10-16')).json();
   assert.equal(legacy.from, '2026-10-12');
   assert.equal(legacy.to, '2026-10-18');
+});
+
+test('GET state reads each entry and log once and refreshes on the next request', async context => {
+  const { get, root, task, project } = await fixture(context);
+  const reads = new Map<string, number>();
+  const readFile = fs.readFileSync;
+  context.mock.method(fs, 'readFileSync', (...args: Parameters<typeof fs.readFileSync>) => {
+    const file = String(args[0]);
+    if (file.startsWith(root + path.sep)) reads.set(file, (reads.get(file) ?? 0) + 1);
+    return Reflect.apply(readFile, fs, args);
+  });
+  assert.equal((await get('/api/state')).status, 200);
+  for (const [file, count] of reads) assert.equal(count, 1, file);
+  assert.equal(reads.get(path.join(project.dir, 'readme.md')), 1);
+  assert.equal(reads.get(path.join(task.dir, 'readme.md')), 1);
+  assert.equal(reads.get(path.join(task.dir, 'log.md')), 1);
+  task.fields.title = 'Updated task';
+  writeEntry(task);
+  appendLog(task.dir, 'updated', 'New activity', '2030-01-01 12:00');
+  const state = await (await get('/api/state')).json();
+  assert.equal(state.tasks.find((entry: any) => entry.id === task.id).title, 'Updated task');
+  assert.equal(state.projects[0].lastActivity, '2030-01-01 12:00');
+});
+
+test('GET state artifact counts match details for nested, registered, and linked files', async context => {
+  const { get, root, task } = await fixture(context);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), '2b-artifact-outside-'));
+  context.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(outside, 'outside.md'), '# Outside');
+  fs.mkdirSync(path.join(task.dir, 'nested'));
+  fs.mkdirSync(path.join(task.dir, 'runs'));
+  fs.writeFileSync(path.join(task.dir, 'nested', 'report.csv'), 'value\n1');
+  fs.writeFileSync(path.join(task.dir, 'nested', 'readme.md'), '# Excluded');
+  fs.writeFileSync(path.join(task.dir, 'runs', 'output.txt'), 'Excluded');
+  fs.writeFileSync(path.join(task.dir, 'report.html'), 'Report');
+  fs.symlinkSync(path.join(task.dir, 'report.html'), path.join(task.dir, 'linked.html'));
+  fs.symlinkSync(outside, path.join(task.dir, 'outside'));
+  fs.symlinkSync(path.join(outside, 'outside.md'), path.join(task.dir, 'outside.md'));
+  task.fields.artifacts = ['report.html', 'report.html', './report.html', 'linked.html', 'missing.md',
+    'outside.md', 'outside/outside.md', '../outside.md', 'runs/output.txt', 'nested/readme.md']
+    .map(file => ({ path: file, title: file, about: '', why: '', added: '' }));
+  writeEntry(task);
+  const detail = await (await get('/api/entry?id=' + encodeURIComponent(task.id))).json();
+  const expected = Object.values(detail.artifacts).reduce((total: number, group: any) => total + group.length, 0);
+  assert.equal(expected, 4);
+  const state = await (await get('/api/state')).json();
+  assert.equal(state.tasks.find((entry: any) => entry.id === task.id).artifactCount, expected);
+  assert.ok(!JSON.stringify(state).includes(path.join(outside, 'outside.md')));
+});
+
+test('GET state responds within 500 ms for 50 projects with 20 tasks each', async context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), '2b-dashboard-performance-'));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (let projectNumber = 0; projectNumber < 50; projectNumber += 1) {
+    const project = createProject(root, `project-${projectNumber}`, { area: 'work' });
+    for (let taskNumber = 0; taskNumber < 20; taskNumber += 1) {
+      const task = createTask(root, project.id, `task-${taskNumber}`, { due: '2030-01-01' });
+      for (let artifactNumber = 0; artifactNumber < 13; artifactNumber += 1) {
+        fs.writeFileSync(path.join(task.dir, `artifact-${artifactNumber}.md`), '# Artifact');
+      }
+    }
+  }
+  const server = startDashboard(root, 0, { agentsDir: path.join(root, 'agents'), load: false });
+  await new Promise<void>(done => server.once('listening', done));
+  context.after(() => new Promise<void>(done => server.close(() => done())));
+  const port = (server.address() as AddressInfo).port;
+  const started = performance.now();
+  const response = await fetch(`http://127.0.0.1:${port}/api/state`);
+  const state = await response.json();
+  const elapsed = performance.now() - started;
+  context.diagnostic(`/api/state: ${elapsed.toFixed(1)} ms`);
+  assert.equal(response.status, 200);
+  assert.equal(state.projects.length, 50);
+  assert.equal(state.tasks.length, 1000);
+  assert.ok(state.projects.every((project: any) => project.taskCounts.total === 20 && project.nextDue === '2030-01-01'));
+  assert.ok(state.tasks.every((task: any) => task.artifactCount === 13));
+  assert.ok(elapsed < 500, `/api/state took ${elapsed.toFixed(1)} ms; expected less than 500 ms`);
 });
 
 test('GET entry renders safe markdown and groups registered and unregistered artifacts', async context => {
@@ -343,6 +421,7 @@ for (const linkedTarget of ['readme.md', 'log.md', 'rules.md', 'folder']) {
       fs.symlinkSync(path.join(outsideTask, linkedTarget), path.join(job.dir, linkedTarget));
     }
     const requests = [
+      () => get('/api/state'),
       () => get('/api/entry?id=' + job.id),
       () => post('/api/status', { id: job.id, status: 'paused', reason: 'Review' }),
       () => post('/api/set', { id: job.id, field: 'title', value: 'Changed' }),
@@ -377,6 +456,15 @@ for (const linkedTarget of ['readme.md', 'log.md', 'rules.md', 'folder']) {
     for (const [file, contents] of originalFiles) assert.deepEqual(fs.readFileSync(path.join(outsideTask, file)), contents);
   });
 }
+
+test('state accepts missing metadata and rejects dangling metadata symlinks', async context => {
+  const { root, job, get } = await fixture(context);
+  const log = path.join(job.dir, 'log.md');
+  fs.unlinkSync(log);
+  assert.equal((await get('/api/state')).status, 200);
+  fs.symlinkSync(path.join(root, 'missing.md'), log);
+  assert.equal((await get('/api/state')).status, 404);
+});
 
 test('task creation rejects symlinked project metadata and new task parents', async context => {
   const { project, post } = await fixture(context);

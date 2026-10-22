@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { parse, serialize, type Fields } from './frontmatter.ts';
 
 export class UserError extends Error {}
@@ -123,16 +124,34 @@ function foldersWithReadme(dir: string): string[] {
   return fs.readdirSync(dir).sort().filter(name => fs.existsSync(path.join(dir, name, 'readme.md')));
 }
 
+const entryReadCache = new AsyncLocalStorage<Map<string, Entry[]>>();
+
+export function withStoreReadCache<Result>(read: () => Result): Result {
+  return entryReadCache.run(new Map(), read);
+}
+
+function cachedEntries(key: string, read: () => Entry[]): Entry[] {
+  const cache = entryReadCache.getStore();
+  const existing = cache?.get(key);
+  if (existing) return existing;
+  const entries = read();
+  cache?.set(key, entries);
+  return entries;
+}
+
 export function listProjects(root: string): Entry[] {
   const projectsDir = path.join(root, 'projects');
-  return foldersWithReadme(projectsDir).map(slug => readEntry('project', slug, path.join(projectsDir, slug)));
+  return cachedEntries(JSON.stringify(['projects', root]), () =>
+    foldersWithReadme(projectsDir).map(slug => readEntry('project', slug, path.join(projectsDir, slug))));
 }
 
 export function listTasks(root: string, project?: string): Entry[] {
-  const projectSlugs = project ? [project] : foldersWithReadme(path.join(root, 'projects'));
-  return projectSlugs.flatMap(slug => {
-    const tasksDir = path.join(root, 'projects', slug, 'tasks');
-    return foldersWithReadme(tasksDir).map(folder => readEntry('task', slug, path.join(tasksDir, folder)));
+  return cachedEntries(JSON.stringify(['tasks', root, project]), () => {
+    const projectSlugs = project ? [project] : foldersWithReadme(path.join(root, 'projects'));
+    return projectSlugs.flatMap(slug => {
+      const tasksDir = path.join(root, 'projects', slug, 'tasks');
+      return foldersWithReadme(tasksDir).map(folder => readEntry('task', slug, path.join(tasksDir, folder)));
+    });
   });
 }
 

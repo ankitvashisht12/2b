@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   NODE_COMMAND, UserError, CLOSED_STATUSES, PRIORITY_LABELS, addDays, appendLog, assertDay, assertSlug,
   createTask, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
-  setField, setStatus, type Entry, type Artifact,
+  setField, setStatus, withStoreReadCache, type Entry, type Artifact,
 } from './store.ts';
 import { isoWeek, readAllEvents } from './week.ts';
 import { formatRules, rulesFor } from './rules.ts';
@@ -37,46 +37,56 @@ class ApiError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-function assertInsideStore(root: string, targetPath: string): void {
+type PathValidation = { realRoot: string; checked: Set<string> };
+
+function assertInsideStore(root: string, targetPath: string, validation?: PathValidation): void {
   const absoluteRoot = path.resolve(root);
-  let existingPath = path.resolve(targetPath);
+  const absoluteTarget = path.resolve(targetPath);
+  let existingPath = absoluteTarget;
   if (existingPath !== absoluteRoot && !existingPath.startsWith(absoluteRoot + path.sep)) throw new ApiError(404, 'not found');
-  const realRoot = fs.realpathSync(root);
+  const realRoot = validation?.realRoot ?? fs.realpathSync(root);
   for (;;) {
-    try {
-      const realTarget = fs.realpathSync(existingPath);
-      if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) throw new ApiError(404, 'not found');
+    if (validation?.checked.has(existingPath)) {
+      validation.checked.add(absoluteTarget);
       return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new ApiError(404, 'not found');
-      try {
-        if (fs.lstatSync(existingPath).isSymbolicLink()) throw new ApiError(404, 'not found');
-      } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw new ApiError(404, 'not found');
-      }
-      const parent = path.dirname(existingPath);
-      if (parent === existingPath) throw new ApiError(404, 'not found');
-      existingPath = parent;
     }
+    try {
+      const information = fs.lstatSync(existingPath, { throwIfNoEntry: false });
+      if (information) {
+        // A regular child stays inside its checked parent. Resolve symbolic links separately.
+        if (!information.isSymbolicLink() && validation?.checked.has(path.dirname(existingPath))) {
+          validation.checked.add(absoluteTarget);
+          return;
+        }
+        const realTarget = fs.realpathSync(existingPath);
+        if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) throw new ApiError(404, 'not found');
+        validation?.checked.add(absoluteTarget);
+        return;
+      }
+    } catch { throw new ApiError(404, 'not found'); }
+    const parent = path.dirname(existingPath);
+    if (parent === existingPath) throw new ApiError(404, 'not found');
+    existingPath = parent;
   }
 }
 
-function assertEntryPaths(root: string, dir: string): void {
-  assertInsideStore(root, dir);
-  for (const file of ['readme.md', 'log.md', 'rules.md', 'runs']) assertInsideStore(root, path.join(dir, file));
+function assertEntryPaths(root: string, dir: string, validation?: PathValidation): void {
+  assertInsideStore(root, dir, validation);
+  for (const file of ['readme.md', 'log.md', 'rules.md', 'runs']) assertInsideStore(root, path.join(dir, file), validation);
 }
 
 function assertStoreEntries(root: string): void {
-  assertInsideStore(root, path.join(root, 'rules.md'));
+  const validation: PathValidation = { realRoot: fs.realpathSync(root), checked: new Set([path.resolve(root)]) };
+  assertInsideStore(root, path.join(root, 'rules.md'), validation);
   const directories = (dir: string) => {
-    assertInsideStore(root, dir);
+    assertInsideStore(root, dir, validation);
     return fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true })
       .filter(item => item.isDirectory() || item.isSymbolicLink())
       .map(item => path.join(dir, item.name)) : [];
   };
   for (const projectDir of directories(path.join(root, 'projects'))) {
-    assertEntryPaths(root, projectDir);
-    for (const taskDir of directories(path.join(projectDir, 'tasks'))) assertEntryPaths(root, taskDir);
+    assertEntryPaths(root, projectDir, validation);
+    for (const taskDir of directories(path.join(projectDir, 'tasks'))) assertEntryPaths(root, taskDir, validation);
   }
 }
 
@@ -157,6 +167,31 @@ function artifactsFor(root: string, entry: Entry) {
   return groups;
 }
 
+function artifactCount(root: string, entry: Entry): number {
+  const included = (file: string) => !file.split(/[\\/]/).includes('runs')
+    && !['readme.md', 'log.md', 'rules.md'].includes(path.basename(file));
+  const files = new Set<string>();
+  const walk = (dir: string, prefix = '') => {
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      const relative = path.join(prefix, item.name);
+      if (item.isDirectory() && item.name !== 'runs') walk(path.join(dir, item.name), relative);
+      else if (item.isFile() && included(relative)) files.add(relative);
+    }
+  };
+  // Entry paths are validated before this walk. Dirents avoid resolving every regular file again.
+  walk(entry.dir);
+  let count = files.size;
+  const registered = new Set(((entry.fields.artifacts as Artifact[] | null) ?? []).map(item => item.path));
+  for (const file of registered) {
+    if (!included(file) || files.has(file)) continue;
+    try {
+      const absolute = storeFile(root, path.relative(root, path.resolve(entry.dir, file)));
+      if (absolute.startsWith(entry.dir + path.sep)) count += 1;
+    } catch { /* Missing or outside registered files are omitted, as in artifact details. */ }
+  }
+  return count;
+}
+
 function rangeFor(params: URLSearchParams) {
   const today = localDate();
   let from = params.get('from') ?? addDays(today, -6);
@@ -176,6 +211,10 @@ function rangeFor(params: URLSearchParams) {
 }
 
 export function dashboardState(root: string, range: string | URLSearchParams = new URLSearchParams(), options: ScheduleOptions = {}) {
+  return withStoreReadCache(() => readDashboardState(root, range, options));
+}
+
+function readDashboardState(root: string, range: string | URLSearchParams, options: ScheduleOptions) {
   const selected = rangeFor(typeof range === 'string' ? new URLSearchParams({ week: range }) : range);
   assertStoreEntries(root);
   assertTrashPaths(root);
@@ -183,22 +222,36 @@ export function dashboardState(root: string, range: string | URLSearchParams = n
   const projects = listProjects(root);
   const tasks = listTasks(root);
   const projectMap = new Map(projects.map(project => [project.id, project]));
-  const lastActivity = (entry: Entry) => events.find(event => entry.kind === 'project' ? event.project === entry.id : event.task === entry.id)?.at ?? null;
+  const projectActivity = new Map<string, string>();
+  const taskActivity = new Map<string, string>();
+  for (const event of events) {
+    if (!projectActivity.has(event.project)) projectActivity.set(event.project, event.at);
+    if (event.task && !taskActivity.has(event.task)) taskActivity.set(event.task, event.at);
+  }
+  const lastActivity = (entry: Entry) => (entry.kind === 'project' ? projectActivity : taskActivity).get(entry.id) ?? null;
   const priority = (entry: Entry) => ({ priority: priorityOf(entry), priorityLabel: PRIORITY_LABELS[priorityOf(entry)] });
   const dateOrder = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '9999-99-99';
+  const projectTotals = new Map(projects.map(project => [project.id, { open: 0, done: 0, total: 0, nextDue: '9999-99-99' }]));
+  for (const task of tasks) {
+    const totals = projectTotals.get(task.project)!;
+    totals.total += 1;
+    if (task.fields.status === 'done') totals.done += 1;
+    if (!CLOSED_STATUSES.includes(String(task.fields.status))) {
+      totals.open += 1;
+      const due = dateOrder(task.fields.due);
+      if (due < totals.nextDue) totals.nextDue = due;
+    }
+  }
   const jobs = jobsOverview(root, options);
   return {
     today: localDate(), ...selected,
     projects: projects.map(project => {
-      const children = tasks.filter(task => task.project === project.id);
-      const due = children.filter(task => !CLOSED_STATUSES.includes(String(task.fields.status)))
-        .map(task => dateOrder(task.fields.due)).sort()[0];
+      const totals = projectTotals.get(project.id)!;
       return { id: project.id, title: project.fields.title, area: project.fields.area,
         status: project.fields.status, statusReason: project.fields['status-reason'] ?? null, ...priority(project),
         started: project.fields.started ?? null, deadline: project.fields.deadline ?? null,
-        taskCounts: { open: children.filter(task => !CLOSED_STATUSES.includes(String(task.fields.status))).length,
-          done: children.filter(task => task.fields.status === 'done').length, total: children.length },
-        nextDue: due && due !== '9999-99-99' ? due : null, lastActivity: lastActivity(project), hasReadme: hasReadme(project) };
+        taskCounts: { open: totals.open, done: totals.done, total: totals.total },
+        nextDue: totals.nextDue !== '9999-99-99' ? totals.nextDue : null, lastActivity: lastActivity(project), hasReadme: hasReadme(project) };
     }).sort((first, second) => priorityRank(first.priority) - priorityRank(second.priority)
       || dateOrder(first.deadline).localeCompare(dateOrder(second.deadline)) || first.id.localeCompare(second.id)),
     tasks: tasks.map(task => {
@@ -207,7 +260,7 @@ export function dashboardState(root: string, range: string | URLSearchParams = n
         title: task.fields.title, kind: task.fields.kind, status: task.fields.status,
         statusReason: task.fields['status-reason'] ?? null, ...priority(task), started: task.fields.started ?? null,
         due: task.fields.due ?? null, prs: task.fields.prs ?? [], lastActivity: lastActivity(task), hasReadme: hasReadme(task),
-        artifactCount: Object.values(artifactsFor(root, task)).reduce((total, group) => total + group.length, 0) };
+        artifactCount: artifactCount(root, task) };
     }).sort((first, second) => priorityRank(first.priority) - priorityRank(second.priority)
       || dateOrder(first.due).localeCompare(dateOrder(second.due))
       || (second.lastActivity ?? '').localeCompare(first.lastActivity ?? '') || first.id.localeCompare(second.id)),
