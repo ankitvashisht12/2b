@@ -1,171 +1,34 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>2b</title>
-<style>
-  :root { color-scheme: light dark; --muted: #8a8a8a; --line: #8884; --bad: #d64545; }
-  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0 auto; padding: 24px; max-width: 1200px; }
-  header { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
-  h1 { font-size: 20px; margin: 0 auto 0 0; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
-  h3 { font-size: 14px; margin: 16px 0 6px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
-  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
-  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; cursor: pointer; }
-  .card:hover, .card:focus { border-color: var(--muted); outline: none; }
-  .failed { border-color: var(--bad); }
-  .muted { color: var(--muted); }
-  .overdue { color: var(--bad); font-weight: 600; }
-  .badge { font-size: 12px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); }
-  .event { display: grid; grid-template-columns: 96px 1fr; gap: 8px; }
-  dialog { max-width: 780px; width: 90vw; border: 1px solid var(--line); border-radius: 10px; }
-  pre { white-space: pre-wrap; font-size: 13px; }
-  a { color: inherit; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8f6">
+  <title>2b — Home</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%232b5647'/%3E%3Ctext x='7' y='28' font-family='system-ui' font-weight='700' font-size='25' fill='%23fff'%3E2b%3C/text%3E%3C/svg%3E">
+  <script>try { const theme = localStorage.getItem('2b-theme'); if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; } catch {}</script>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
-<header>
-  <h1>2b</h1>
-  <button id="previous" aria-label="Previous week">◀</button>
-  <input id="week" type="date" aria-label="Any day in the week to show">
-  <button id="next" aria-label="Next week">▶</button>
-  <button id="this-week">This week</button>
-</header>
-<section id="failed"></section>
-<div class="grid">
-  <section><h2>Projects</h2><div id="projects"></div></section>
-  <section>
-    <h2>Due in the next 7 days</h2><div id="due"></div>
-    <h2 id="week-title">Week</h2><div id="events"></div>
-  </section>
-</div>
-<dialog id="detail">
-  <form method="dialog" style="float:right"><button>Close</button></form>
-  <div id="detail-body"></div>
-</dialog>
-<script>
-const byId = id => document.getElementById(id);
-const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-const addDays = (day, count) => { const date = new Date(day + 'T00:00:00Z'); date.setUTCDate(date.getUTCDate() + count); return date.toISOString().slice(0, 10); };
-const today = new Date().toLocaleDateString('en-CA');
-const OPEN_PROJECT_STATUSES = ['active', 'on-hold', 'paused'];
-const CLOSED_PROJECT_STATUSES = ['done', 'archived'];
-const isOpenTask = task => !['done', 'dropped'].includes(task.status);
-const card = (id, html, extraClass = '') => `<div class="card ${extraClass}" tabindex="0" data-id="${escapeHtml(id)}">${html}</div>`;
-const safeUrl = url => /^https?:\/\//.test(url) ? escapeHtml(url) : '#';
-
-async function load(day) {
-  const response = await fetch('/api/state?week=' + day);
-  if (!response.ok) {
-    byId('failed').textContent = await response.text();
-    return;
-  }
-  const state = await response.json();
-  byId('week').value = day;
-  byId('week-title').textContent = `Week ${state.week.start} – ${state.week.end}`;
-  renderFailed(state.failed);
-  renderProjects(state);
-  renderDue(state);
-  renderEvents(state.events);
-}
-
-function renderFailed(failed) {
-  byId('failed').innerHTML = failed.length === 0 ? '' : '<h2>Failed recurring tasks</h2>' + failed.map(task => {
-    const [project, folder] = task.id.split('/');
-    const logPath = `projects/${project}/tasks/${folder}/${task['last-log']}`;
-    const logLink = task['last-log'] ? ` <a href="/api/file?path=${encodeURIComponent(logPath)}" target="_blank">run log</a>` : '';
-    return card(task.id, `<b>${escapeHtml(task.title)}</b> <span class="muted">last run ${escapeHtml(task['last-run'])}</span>${logLink}`, 'failed');
-  }).join('');
-}
-
-function projectCard(project, tasks) {
-  const openTasks = tasks.filter(task => task.project === project.id && isOpenTask(task)).length;
-  const deadline = project.deadline && project.deadline !== 'unknown' ? ` · deadline ${escapeHtml(project.deadline)}` : '';
-  const reason = project['status-reason'] ? `<div class="muted">${escapeHtml(project['status-reason'])}</div>` : '';
-  return card(project.id, `<b>${escapeHtml(project.title)}</b> <span class="badge">${escapeHtml(project.area)}</span> <span class="muted">${openTasks} open tasks${deadline}</span>${reason}`);
-}
-
-function renderProjects(state) {
-  const section = (status, open) => {
-    const projects = state.projects.filter(project => project.status === status);
-    if (projects.length === 0) return '';
-    const cards = projects.map(project => projectCard(project, state.tasks)).join('');
-    return open ? `<h3>${status} (${projects.length})</h3>${cards}` : `<details><summary class="muted">${status} (${projects.length})</summary>${cards}</details>`;
-  };
-  byId('projects').innerHTML = [
-    ...OPEN_PROJECT_STATUSES.map(status => section(status, true)),
-    ...CLOSED_PROJECT_STATUSES.map(status => section(status, false)),
-  ].join('') || '<p class="muted">No projects yet.</p>';
-}
-
-function renderDue(state) {
-  const horizon = addDays(state.today, 7);
-  const due = state.tasks
-    .filter(task => /^\d{4}-\d{2}-\d{2}$/.test(task.due ?? '') && task.due <= horizon && isOpenTask(task))
-    .sort((first, second) => first.due.localeCompare(second.due));
-  byId('due').innerHTML = due.map(task => card(task.id,
-    `<span class="${task.due < state.today ? 'overdue' : ''}">${escapeHtml(task.due)}</span> <b>${escapeHtml(task.title)}</b> <span class="muted">${escapeHtml(task.project)} · ${escapeHtml(task.status)}</span>`)).join('')
-    || '<p class="muted">Nothing due.</p>';
-}
-
-function renderEvents(events) {
-  if (events.length === 0) {
-    byId('events').innerHTML = '<p class="muted">No activity recorded this week.</p>';
-    return;
-  }
-  const groups = {};
-  for (const event of events) (groups[event.project] ??= []).push(event);
-  byId('events').innerHTML = Object.entries(groups).map(([project, projectEvents]) =>
-    `<h3><a href="#" data-id="${escapeHtml(project)}">${escapeHtml(project)}</a></h3>` + projectEvents.map(event => {
-      const task = event.task ? `<a href="#" data-id="${escapeHtml(event.task)}">${escapeHtml(event.task.split('/')[1])}</a> · ` : '';
-      const detail = event.detail ? ` — ${escapeHtml(event.detail)}` : '';
-      return `<div class="event"><span class="muted">${escapeHtml(event.at.slice(5))}</span><span>${task}${escapeHtml(event.event)}${detail}</span></div>`;
-    }).join('')).join('');
-}
-
-const list = (title, items, render) => items && items.length ? `<h4>${title}</h4><ul>${items.map(item => `<li>${render(item)}</li>`).join('')}</ul>` : '';
-
-async function showDetail(id) {
-  const response = await fetch('/api/entry?id=' + encodeURIComponent(id));
-  if (!response.ok) return;
-  const entry = await response.json();
-  const fields = entry.fields;
-  const fileUrl = file => '/api/file?path=' + encodeURIComponent(entry.relativeDir + '/' + file);
-  byId('detail-body').innerHTML = `
-    <h2>${escapeHtml(entry.kind)} · ${escapeHtml(entry.id)}</h2>
-    <h3>${escapeHtml(fields.title)}</h3>
-    <p><span class="badge">${escapeHtml(fields.status)}</span> ${escapeHtml(fields['status-reason'])}</p>
-    <p class="muted">started ${escapeHtml(fields.started)}${fields.due ? ' · due ' + escapeHtml(fields.due) : ''}${fields.deadline ? ' · deadline ' + escapeHtml(fields.deadline) : ''}${fields.every ? ' · every ' + escapeHtml(fields.every) : ''}</p>
-    ${fields['last-log'] ? `<p><a href="${fileUrl(fields['last-log'])}" target="_blank">Last run log</a> (${escapeHtml(fields['last-result'])})</p>` : ''}
-    ${list('Tasks', entry.tasks, task => `<a href="#" data-id="${escapeHtml(task.id)}">${escapeHtml(task.title)}</a> <span class="muted">${escapeHtml(task.status)}</span>`)}
-    ${list('PRs', fields.prs, url => `<a href="${safeUrl(url)}" target="_blank">${escapeHtml(url)}</a>`)}
-    ${list('Artifacts', fields.artifacts, artifact => `<a href="${fileUrl(artifact.path)}" target="_blank">${escapeHtml(artifact.title || artifact.path)}</a> <span class="muted">${escapeHtml(artifact.about)}</span>`)}
-    ${list('Resources', fields.resources, resource => resource.url ? `<a href="${safeUrl(resource.url)}" target="_blank">${escapeHtml(resource.title)}</a>` : `${escapeHtml(resource.title)} <span class="muted">${escapeHtml(resource.path)}</span>`)}
-    ${list('Links', fields.links, link => `${escapeHtml(link.type)} → <a href="#" data-id="${escapeHtml(link.to)}">${escapeHtml(link.to)}</a>`)}
-    ${list('Linked from', entry.reverseLinks, link => `<a href="#" data-id="${escapeHtml(link.from)}">${escapeHtml(link.from)}</a> (${escapeHtml(link.type)})`)}
-    <h4>Rules</h4><pre>${escapeHtml(entry.rules)}</pre>
-    <h4>Description</h4><pre>${escapeHtml(entry.body.trim())}</pre>
-    <h4>Log</h4><pre>${escapeHtml(entry.log)}</pre>`;
-  if (!byId('detail').open) byId('detail').showModal();
-}
-
-document.addEventListener('click', event => {
-  if (event.target.closest('a')) return;
-  const target = event.target.closest('[data-id]');
-  if (!target) return;
-  event.preventDefault();
-  showDetail(target.dataset.id);
-});
-document.addEventListener('keydown', event => {
-  if (event.key === 'Enter' && event.target.dataset?.id) showDetail(event.target.dataset.id);
-});
-byId('previous').onclick = () => load(addDays(byId('week').value, -7));
-byId('next').onclick = () => load(addDays(byId('week').value, 7));
-byId('this-week').onclick = () => load(today);
-byId('week').onchange = () => byId('week').value && load(byId('week').value);
-load(new URLSearchParams(location.search).get('week') || today);
-</script>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app-shell">
+    <aside class="rail" aria-label="Workspace">
+      <a class="brand" href="#/home" aria-label="2b home"><span class="brand-mark">2b</span><span class="brand-name">Second brain</span></a>
+      <nav id="navigation" aria-label="Main navigation"></nav>
+      <div class="rail-footer"><span class="local-label"><span class="connection-dot"></span>Local workspace</span><div class="rail-tools"><button id="theme-toggle" class="icon-button" aria-label="Change theme" title="Change theme"></button><button id="shortcut-button" class="icon-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"></button></div></div>
+    </aside>
+    <div class="workspace">
+      <header id="topbar" class="topbar" aria-label="Filters"></header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="workspace-footer"><span>Everything has its place.</span><button class="text-button" data-action="shortcuts">Keyboard shortcuts <kbd>?</kbd></button></footer>
+    </div>
+  </div>
+  <div id="drawer-root"></div>
+  <div id="popover-root"></div>
+  <div id="palette-root"></div>
+  <div id="toasts" class="toasts" aria-label="Notifications"></div>
+  <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript><p class="empty-state">Enable JavaScript to use the dashboard. Your data remains available through the 2b CLI.</p></noscript>
 </body>
 </html>
