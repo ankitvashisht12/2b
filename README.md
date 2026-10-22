@@ -1,5 +1,10 @@
 # 2b — your 2nd brain
 
+<p align="center">
+  <a href="docs/media/2b-demo.mp4"><img src="docs/media/2b-demo.gif" alt="2b demo: ask your agent to create a project, see it in the dashboard, check what to work on today" width="100%"></a>
+  <br><sub><a href="docs/media/2b-demo.mp4">▶ Watch the full 37-second demo</a></sub>
+</p>
+
 **2b** stands for **2nd brain**. A CLI that you (or your agent) use to keep track of projects, tasks, artifacts, rules, and recurring jobs, with a local dashboard to see it all. Data lives in `~/obsidian/2b` (override with `TWOB_HOME` or `~/.config/2b/config.json` `{ "home": "..." }`).
 
 ## What it does
