@@ -5,7 +5,7 @@ import path from 'node:path';
 import { makeStore } from './helpers.ts';
 import {
   createProject, createTask, resolve, setStatus, setField, addLink, addPr,
-  reverseLinks, addArtifact, createNote, readEntry, localDate, UserError, assertDay,
+  priorityOf, priorityRank, PRIORITY_LABELS, writeEntry, reverseLinks, addArtifact, createNote, readEntry, localDate, UserError, assertDay,
 } from '../src/store.ts';
 
 const readLog = (dir: string) => fs.readFileSync(path.join(dir, 'log.md'), 'utf8');
@@ -122,4 +122,29 @@ test('date fields reject invalid calendar dates and keep allowed empty values', 
 test('task creation rejects an invalid project name before looking up its path', () => {
   const root = makeStore();
   assert.throws(() => createTask(root, '../x', 't'), /lowercase/);
+});
+
+
+test('priority defaults, ranks, kind validation, and check diagnostics', async () => {
+  const { checkStore } = await import('../src/check.ts');
+  const root = makeStore();
+  const project = createProject(root, 'priority', { area: 'work', priority: 'P1' });
+  const task = createTask(root, project.id, 'task', { priority: 'high' });
+  assert.equal(priorityOf(project), 'P1');
+  assert.equal(priorityOf(task), 'high');
+  assert.equal(PRIORITY_LABELS.P1, '🔥 P1');
+  assert.deepEqual(['P1', 'P5', 'high', 'med', 'low'].map(priorityRank), [1, 5, 1, 2, 3]);
+  delete project.fields.priority;
+  delete task.fields.priority;
+  assert.equal(priorityOf(project), 'P3');
+  assert.equal(priorityOf(task), 'med');
+  setField(project, 'priority', 'P2');
+  setField(task, 'priority', 'low');
+  assert.throws(() => setField(project, 'priority', 'high'), /P1, P2/);
+  assert.throws(() => setField(task, 'priority', 'P1'), /high, med, low/);
+  assert.throws(() => createProject(root, 'bad', { area: 'work', priority: 'high' }), /priority/);
+  assert.throws(() => createTask(root, project.id, 'bad', { priority: 'P1' }), /priority/);
+  project.fields.priority = 'high'; task.fields.priority = 'P1';
+  writeEntry(project); writeEntry(task);
+  assert.equal(checkStore(root).filter(problem => problem.includes('priority')).length, 2);
 });

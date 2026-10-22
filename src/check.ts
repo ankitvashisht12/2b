@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  AREAS, DATE, LINK_TYPES, PROJECT_STATUSES, REASON_REQUIRED, TASK_STATUSES, assertSlug, readEntry,
+  AREAS, DATE, LINK_TYPES, PROJECT_PRIORITIES, TASK_PRIORITIES, PROJECT_STATUSES, REASON_REQUIRED, TASK_STATUSES, assertSlug, readEntry,
   type Entry, type Kind, type Link,
 } from './store.ts';
 import { parseEvery } from './schedule.ts';
@@ -40,6 +40,10 @@ function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
   }
   if (entry.kind === 'task' && !/^\d{4}-\d{2}-\d{2}-/.test(folderName)) report('folder name must start with yyyy-mm-dd-');
   if (!fields.title) report('missing title');
+  const priorities = entry.kind === 'project' ? PROJECT_PRIORITIES : TASK_PRIORITIES;
+  if (fields.priority !== undefined && fields.priority !== null && !priorities.includes(String(fields.priority))) {
+    report(`priority "${fields.priority}" is not one of ${priorities.join(', ')}`);
+  }
   const statuses = entry.kind === 'project' ? PROJECT_STATUSES : TASK_STATUSES;
   const status = String(fields.status);
   if (!statuses.includes(status)) report(`status "${status}" is not one of ${statuses.join(', ')}`);

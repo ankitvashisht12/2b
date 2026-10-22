@@ -9,7 +9,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { makeStore } from './helpers.ts';
 import { createProject, createTask, readEntry, setStatus, localDate, writeEntry } from '../src/store.ts';
 import { addRule, rulesFile } from '../src/rules.ts';
-import { parseEvery, syncSchedules, runTask, buildPrompt, labelFor, plistFor } from '../src/schedule.ts';
+import { nextRun, humanSchedule, jobsOverview, parseEvery, syncSchedules, runTask, buildPrompt, labelFor, plistFor } from '../src/schedule.ts';
 
 process.env.TWOB_NO_NOTIFY = '1';
 
@@ -217,4 +217,46 @@ test('empty command fails without launching a shell and check reports empty jobs
   const problems = checkStore(root).join('\n');
   assert.match(problems, /no command set/);
   assert.match(problems, /empty-agent.*empty body/);
+});
+
+
+test('next run uses local daily, weekday, hourly, and multi-day intervals', () => {
+  const local = (text: string) => new Date(text);
+  for (const [spec, from, expected] of [
+    ['daily 19:00', '2026-10-23T19:00:00', '2026-10-24T19:00:00'],
+    ['weekdays 14:00', '2026-10-23T15:00:00', '2026-10-26T14:00:00'],
+    ['hourly', '2026-10-23T15:25:30', '2026-10-23T16:00:00'],
+    ['mon,fri 10:00', '2026-10-23T11:00:00', '2026-10-26T10:00:00'],
+    ['sun 10:00', '2026-10-24T11:00:00', '2026-10-25T10:00:00'],
+  ]) assert.equal(nextRun(parseEvery(spec), local(from)).getTime(), local(expected).getTime());
+  assert.deepEqual(['daily 19:00', 'weekdays 14:00', 'mon,fri 10:00', 'hourly'].map(humanSchedule),
+    ['Daily 19:00', 'Weekdays 14:00', 'Mon, Fri 10:00', 'Hourly']);
+});
+
+test('jobs overview scopes loaded plists and returns limited newest run history', () => {
+  const root = makeStore();
+  const agentsDir = fs.mkdtempSync(path.join(os.tmpdir(), '2b-agents-'));
+  createProject(root, 'ops', { area: 'work' });
+  const task = createTask(root, 'ops', 'history', { every: 'hourly', run: 'command', command: 'true', priority: 'high' });
+  syncSchedules(root, { agentsDir, load: false });
+  fs.mkdirSync(path.join(task.dir, 'runs'));
+  for (let number = 1; number <= 22; number += 1) {
+    fs.writeFileSync(path.join(task.dir, 'runs', `2026-10-${String(number).padStart(2, '0')}-100000.log`),
+      number === 22 ? 'unfinished' : `exit: ${number === 21 ? 3 : 0}\n`);
+  }
+  let job = jobsOverview(root, { agentsDir })[0];
+  assert.equal(job.loaded, true);
+  assert.equal(job.schedule, 'Hourly');
+  assert.equal(job.priority, 'high');
+  assert.match(job.nextRun!, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.equal(job.runs.length, 20);
+  assert.equal(job.runs[0].ok, null);
+  assert.equal(job.runs[1].ok, false);
+  assert.equal(job.runs[2].ok, true);
+  assert.equal(job.runs[0].at, '2026-10-22 10:00');
+  setStatus(task, 'paused', 'maintenance');
+  fs.writeFileSync(path.join(agentsDir, `${labelFor(task.id)}.plist`), plistFor(labelFor(task.id), [], [], { TWOB_HOME: root + '-foreign' }, ''));
+  job = jobsOverview(root, { agentsDir })[0];
+  assert.equal(job.loaded, false);
+  assert.equal(job.nextRun, null);
 });

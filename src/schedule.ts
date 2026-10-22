@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   UserError, NODE_COMMAND, appendLog, fileTimestamp, listTasks, localDate, localDateTime, readEntry, writeEntry,
-  type Entry,
+  priorityOf, type Entry,
 } from './store.ts';
 import { formatRules, rulesFor } from './rules.ts';
 
@@ -27,6 +27,82 @@ export function parseEvery(spec: string): CalendarInterval[] {
   return days.map(day => {
     if (!(day in WEEKDAY_NUMBERS)) throw new UserError(`unknown day "${day}" in schedule "${spec}"`);
     return { Weekday: WEEKDAY_NUMBERS[day], Hour: hour, Minute: minute };
+  });
+}
+
+export function nextRun(intervals: CalendarInterval[], from: Date): Date {
+  if (!Number.isFinite(from.getTime()) || !intervals.length || intervals.some(interval =>
+    !Number.isInteger(interval.Minute) || interval.Minute < 0 || interval.Minute > 59
+    || (interval.Hour !== undefined && (!Number.isInteger(interval.Hour) || interval.Hour < 0 || interval.Hour > 23))
+    || (interval.Weekday !== undefined && (!Number.isInteger(interval.Weekday) || interval.Weekday < 0 || interval.Weekday > 7)))) {
+    throw new UserError('invalid calendar intervals or start time');
+  }
+  const candidate = new Date(from);
+  candidate.setSeconds(0, 0);
+  candidate.setTime(candidate.getTime() + 60_000);
+  for (let minute = 0; minute < 9 * 24 * 60; minute += 1) {
+    if (intervals.some(interval => candidate.getMinutes() === interval.Minute
+      && (interval.Hour === undefined || candidate.getHours() === interval.Hour)
+      && (interval.Weekday === undefined || candidate.getDay() === interval.Weekday % 7))) return candidate;
+    candidate.setTime(candidate.getTime() + 60_000);
+  }
+  throw new UserError('no matching calendar time in the next nine days');
+}
+
+export function humanSchedule(spec: string): string {
+  const intervals = parseEvery(spec);
+  const normalized = spec.trim().toLowerCase();
+  if (normalized === 'hourly') return 'Hourly';
+  const time = `${String(intervals[0].Hour).padStart(2, '0')}:${String(intervals[0].Minute).padStart(2, '0')}`;
+  if (normalized.startsWith('daily ')) return `Daily ${time}`;
+  if (normalized.startsWith('weekdays ')) return `Weekdays ${time}`;
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return `${intervals.map(interval => names[interval.Weekday!]).join(', ')} ${time}`;
+}
+
+export type Job = {
+  id: string; title: string; project: string; every: string; schedule: string;
+  run: string; agent: string | null; command: string | null; status: string; priority: string;
+  loaded: boolean; nextRun: string | null; lastRun: string | null; lastResult: string | null; lastLog: string | null;
+  runs: { file: string; at: string; ok: boolean | null }[];
+};
+
+export function jobsOverview(
+  root: string,
+  { agentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents') } = {},
+): Job[] {
+  const nullable = (value: unknown) => value === null || value === undefined ? null : String(value);
+  return listTasks(root).filter(task => task.fields.kind === 'recurring').map(task => {
+    const fields = task.fields;
+    const every = String(fields.every ?? '');
+    let schedule = every;
+    let upcoming: string | null = null;
+    try {
+      schedule = humanSchedule(every);
+      if (fields.status === 'doing') upcoming = localDateTime(nextRun(parseEvery(every), new Date()));
+    } catch (error) {
+      if (!(error instanceof UserError)) throw error;
+    }
+    const plist = path.join(agentsDir, `${labelFor(task.id)}.plist`);
+    const loaded = fs.existsSync(plist) && fs.readFileSync(plist, 'utf8')
+      .includes(`<key>TWOB_HOME</key><string>${xmlEscape(root)}</string>`);
+    const runsDir = path.join(task.dir, 'runs');
+    const runs = (fs.existsSync(runsDir) ? fs.readdirSync(runsDir, { withFileTypes: true }) : [])
+      .filter(item => item.isFile() && /^\d{4}-\d{2}-\d{2}-\d{6}(?:-\d+)*\.log$/.test(item.name))
+      .map(item => item.name).sort((left, right) => right.localeCompare(left, 'en', { numeric: true })).slice(0, 20)
+      .map(file => {
+        const contents = fs.readFileSync(path.join(runsDir, file), 'utf8');
+        const exits = [...contents.matchAll(/^exit: (.+)$/gm)];
+        const result = exits.at(-1)?.[1].trim();
+        const at = `${file.slice(0, 10)} ${file.slice(11, 13)}:${file.slice(13, 15)}`;
+        return { file: path.posix.join('runs', file), at, ok: result === undefined ? null : result === '0' };
+      });
+    return {
+      id: task.id, title: String(fields.title ?? ''), project: task.project, every, schedule,
+      run: String(fields.run ?? ''), agent: nullable(fields.agent), command: nullable(fields.command),
+      status: String(fields.status ?? ''), priority: priorityOf(task), loaded, nextRun: upcoming,
+      lastRun: nullable(fields['last-run']), lastResult: nullable(fields['last-result']), lastLog: nullable(fields['last-log']), runs,
+    };
   });
 }
 
@@ -111,7 +187,13 @@ export function syncSchedules(
     if (wanted.has(label)) continue;
     const plistFile = path.join(agentsDir, fileName);
     if (!fs.readFileSync(plistFile, 'utf8').includes(`<key>TWOB_HOME</key><string>${xmlEscape(root)}</string>`)) continue;
-    if (load) launchctl('bootout', plistFile);
+    if (load) {
+      const result = launchctl('bootout', plistFile);
+      if (!result.ok) {
+        failed.push({ label, reason: result.reason });
+        continue;
+      }
+    }
     fs.rmSync(plistFile);
     removed.push(label);
   }

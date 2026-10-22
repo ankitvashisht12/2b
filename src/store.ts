@@ -8,7 +8,10 @@ export class UserError extends Error {}
 
 export const AREAS = ['work', 'personal'];
 export const PROJECT_STATUSES = ['active', 'paused', 'on-hold', 'done', 'archived'];
-export const TASK_STATUSES = ['todo', 'doing', 'blocked', 'done', 'dropped'];
+export const TASK_STATUSES = ['todo', 'doing', 'blocked', 'done', 'dropped', 'paused'];
+export const PROJECT_PRIORITIES = ['P1', 'P2', 'P3', 'P4', 'P5'];
+export const TASK_PRIORITIES = ['high', 'med', 'low'];
+export const PRIORITY_LABELS: Record<string, string> = { P1: '🔥 P1', P2: '⚡ P2', P3: '🎯 P3', P4: '🌱 P4', P5: '💤 P5', high: 'high', med: 'med', low: 'low' };
 export const CLOSED_STATUSES = ['done', 'archived', 'dropped'];
 export const REASON_REQUIRED = ['paused', 'on-hold', 'blocked', 'dropped'];
 export const LINK_TYPES = ['depends-on', 'follow-up', 'related'];
@@ -21,14 +24,23 @@ const SLUG = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}-/;
 const RECURRING_FIELDS = ['every', 'run', 'agent', 'command'];
 const SETTABLE_FIELDS = {
-  project: ['title', 'area', 'started', 'deadline'],
-  task: ['title', 'started', 'due', 'repo', 'branch', ...RECURRING_FIELDS],
+  project: ['title', 'area', 'started', 'deadline', 'priority'],
+  task: ['title', 'started', 'due', 'repo', 'branch', 'priority', ...RECURRING_FIELDS],
 };
 
 export type Kind = 'project' | 'task';
 export type Entry = { kind: Kind; id: string; project: string; dir: string; fields: Fields; body: string };
 export type Artifact = { path: string; title: string; about: string; why: string; added: string };
 export type Link = { to: string; type: string };
+
+export function priorityOf(entry: Entry): string {
+  return String(entry.fields.priority ?? (entry.kind === 'project' ? 'P3' : 'med'));
+}
+
+export function priorityRank(value: string): number {
+  const position = (value.startsWith('P') ? PROJECT_PRIORITIES : TASK_PRIORITIES).indexOf(value);
+  return position < 0 ? Number.POSITIVE_INFINITY : position + 1;
+}
 
 export function expandHome(filePath: string): string {
   return filePath === '~' || filePath.startsWith('~/') ? path.join(os.homedir(), filePath.slice(1)) : filePath;
@@ -148,20 +160,21 @@ export function appendLog(dir: string, event: string, detail = '', at = localDat
   fs.appendFileSync(logFile, `${separator}- ${at} ${event}${cleanDetail ? ` | ${cleanDetail}` : ''}\n`);
 }
 
-export type ProjectOptions = { area: string; title?: string; deadline?: string; started?: string };
+export type ProjectOptions = { area: string; title?: string; deadline?: string; started?: string; priority?: string; body?: string };
 
 export function createProject(root: string, slug: string, options: ProjectOptions): Entry {
   assertSlug(slug, 'project');
   assertOneOf(options.area, AREAS, 'area');
+  if (options.priority !== undefined) assertOneOf(options.priority, PROJECT_PRIORITIES, 'project priority');
   if (options.deadline) assertDay(options.deadline, 'deadline');
   const dir = path.join(root, 'projects', slug);
   if (fs.existsSync(dir)) throw new UserError(`project "${slug}" already exists`);
   fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true });
   const title = options.title ?? slug;
   const entry: Entry = {
-    kind: 'project', id: slug, project: slug, dir, body: `\n# ${title}\n`,
+    kind: 'project', id: slug, project: slug, dir, body: `\n# ${title}\n${options.body ? `\n${options.body}\n` : ''}`,
     fields: {
-      title, area: options.area, status: 'active', 'status-reason': null,
+      title, priority: options.priority ?? 'P3', area: options.area, status: 'active', 'status-reason': null,
       started: options.started ?? localDate(), deadline: options.deadline ?? 'unknown',
       repos: [], prs: [], resources: [], links: [],
     },
@@ -172,7 +185,7 @@ export function createProject(root: string, slug: string, options: ProjectOption
 }
 
 export type TaskOptions = {
-  title?: string; due?: string; repo?: string; branch?: string; started?: string; body?: string;
+  title?: string; priority?: string; due?: string; repo?: string; branch?: string; started?: string; body?: string;
   every?: string; run?: string; agent?: string; command?: string;
 };
 
@@ -182,6 +195,7 @@ export function createTask(root: string, project: string, slug: string, options:
   const projectDir = path.join(root, 'projects', project);
   if (!fs.existsSync(path.join(projectDir, 'readme.md'))) throw new UserError(`project "${project}" does not exist`);
   if (options.due) assertDay(options.due, 'due');
+  if (options.priority !== undefined) assertOneOf(options.priority, TASK_PRIORITIES, 'task priority');
   const started = options.started ?? localDate();
   const folder = DATE_PREFIX.test(slug) ? slug : `${started}-${slug}`;
   const dir = path.join(projectDir, 'tasks', folder);
@@ -189,7 +203,7 @@ export function createTask(root: string, project: string, slug: string, options:
   const title = options.title ?? slug;
   const isRecurring = Boolean(options.every);
   const fields: Fields = {
-    title, kind: isRecurring ? 'recurring' : 'normal', status: isRecurring ? 'doing' : 'todo', 'status-reason': null,
+    title, priority: options.priority ?? 'med', kind: isRecurring ? 'recurring' : 'normal', status: isRecurring ? 'doing' : 'todo', 'status-reason': null,
     started, due: options.due ?? null, repo: options.repo ?? null, branch: options.branch ?? null,
     prs: [], resources: [], links: [], artifacts: [],
   };
@@ -228,6 +242,7 @@ export function setField(entry: Entry, field: string, value: string): void {
   if (RECURRING_FIELDS.includes(field) && entry.fields.kind !== 'recurring') {
     throw new UserError(`"${field}" is only for recurring tasks`);
   }
+  if (field === 'priority') assertOneOf(value, entry.kind === 'project' ? PROJECT_PRIORITIES : TASK_PRIORITIES, `${entry.kind} priority`);
   if (field === 'area') assertOneOf(value, AREAS, 'area');
   if (field === 'started') assertDay(value, 'started', false);
   if (field === 'deadline' || field === 'due') assertDay(value, field);
