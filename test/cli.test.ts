@@ -219,3 +219,37 @@ test('invalid config gives one error line while help still works', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr.trim(), /^2b: ~\/\.config\/2b\/config\.json is not valid: [^\r\n]+$/);
 });
+
+
+test('priority flags filter and sort lists with visible labels', () => {
+  const twob = makeRunner();
+  twob('init');
+  for (const [slug, priority, deadline] of [['later', 'P2', '2026-11-01'], ['urgent', 'P1', '2026-12-01'], ['early', 'P2', '2026-10-25']]) {
+    assert.equal(twob('new', 'project', slug, '--area', 'work', '--priority', priority, '--deadline', deadline).code, 0);
+  }
+  assert.deepEqual(JSON.parse(twob('ls', '--json').out).map((entry: any) => entry.id), ['urgent', 'early', 'later']);
+  assert.equal(JSON.parse(twob('ls', '--priority', 'P1', '--json').out).length, 1);
+  assert.match(twob('show', 'urgent').out, /🔥 P1/);
+  assert.match(twob('ls').out, /⚡ P2/);
+  for (const [slug, priority, due] of [['low', 'low', '2026-10-23'], ['later', 'high', '2026-11-01'], ['early', 'high', '2026-10-25']]) {
+    assert.equal(twob('new', 'task', 'urgent', slug, '--priority', priority, '--due', due).code, 0);
+  }
+  const tasks = JSON.parse(twob('ls', '--tasks', '--json').out);
+  assert.ok(tasks[0].id.endsWith('-early'));
+  assert.ok(tasks[1].id.endsWith('-later'));
+  assert.equal(JSON.parse(twob('ls', '--tasks', '--priority', 'high', '--json').out).length, 2);
+  assert.equal(twob('set', tasks[0].id, 'priority', 'med').code, 0);
+  assert.equal(twob('ls', '--priority', 'high').code, 1);
+});
+
+test('delete, trash ls, and restore work through the CLI with fake launchd', () => {
+  const twob = makeRunner();
+  twob('init'); twob('new', 'project', 'ops', '--area', 'work');
+  const task = createTask(twob.root, 'ops', 'job', { every: 'hourly', run: 'command', command: 'true' });
+  const result = twob('delete', task.id, '--json');
+  assert.equal(result.code, 0, result.err);
+  const { trashId } = JSON.parse(result.out);
+  assert.equal(JSON.parse(twob('trash', 'ls', '--json').out)[0].trashId, trashId);
+  assert.equal(twob('restore', trashId).code, 0);
+  assert.equal(JSON.parse(twob('show', task.id, '--json').out).status, 'paused');
+});

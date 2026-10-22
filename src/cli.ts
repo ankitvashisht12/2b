@@ -9,20 +9,21 @@ import { isoWeek, weekEvents, type LogEvent } from './week.ts';
 import { findInStore } from './find.ts';
 import { checkStore } from './check.ts';
 import { DEFAULT_PORT, openDashboard, startDashboard } from './dash.ts';
+import { trashTask, restoreTask, listTrash } from './trash.ts';
 import { applyPlan, scanSources } from './importer.ts';
 
 const USAGE = `2b — second brain
 
   2b init
-  2b new project <slug> --area work|personal [--title T] [--deadline D]
-  2b new task <project> <slug> [--title T] [--due D] [--repo R] [--branch B] [--body TEXT]
+  2b new project <slug> --area work|personal [--title T] [--deadline D] [--priority P1|P2|P3|P4|P5] [--body TEXT]
+  2b new task <project> <slug> [--title T] [--due D] [--priority high|med|low] [--repo R] [--branch B] [--body TEXT]
   2b new task <project> <slug> --every "daily 19:00" --run agent|command [--agent claude|codex] [--command CMD] [--body RULE]
   2b path [<project|task>]
   2b status <project|task> <status> [--reason R]
   2b set <project|task> <field> <value>
   2b add <project|task> pr <url> | resource <title> <path-or-url> | link <target> depends-on|follow-up|related
   2b log <project|task> <note>
-  2b ls [--tasks] [--status S] [--area A] [--project P] [--due-before D|+Nd] [--all] [--short]
+  2b ls [--tasks] [--priority V] [--status S] [--area A] [--project P] [--due-before D|+Nd] [--all] [--short]
   2b show <project|task>
   2b artifact add <task> <file-or-name> [--title T] --about A --why W
   2b find <text>
@@ -32,6 +33,9 @@ const USAGE = `2b — second brain
   2b rule add global|<project|task> [--key K] <text>
   2b rule rm global|<project|task> <key-or-text>
   2b dash [--port N] [--open]
+  2b delete <task>
+  2b restore <trashId>
+  2b trash ls
   2b run <task>
   2b schedule sync | ls
   2b notify <text> [--title T]
@@ -55,7 +59,13 @@ function need(value: string | undefined, what: string): string {
 }
 
 const text = (name: string) => options[name] as string | undefined;
-const summary = (entry: Entry) => ({ id: entry.id, path: entry.dir, ...entry.fields });
+const summary = (entry: Entry) => ({ id: entry.id, path: entry.dir, ...entry.fields, priority: store.priorityOf(entry) });
+const sortEntries = (entries: Entry[]) => entries.sort((left, right) => {
+  const rank = store.priorityRank(store.priorityOf(left)) - store.priorityRank(store.priorityOf(right));
+  const dateField = left.kind === 'project' ? 'deadline' : 'due';
+  const date = (entry: Entry) => store.DATE.test(String(entry.fields[dateField])) ? String(entry.fields[dateField]) : '9999-99-99';
+  return rank || date(left).localeCompare(date(right)) || left.id.localeCompare(right.id);
+});
 const isOpen = (status: unknown) => !store.CLOSED_STATUSES.includes(String(status));
 
 function dueLimit(value: string): string {
@@ -67,13 +77,13 @@ function dueLimit(value: string): string {
 
 function taskLine(task: Entry, short: boolean): string {
   const due = store.DATE.test(String(task.fields.due)) ? `due ${task.fields.due}` : '';
-  if (short) return `${task.fields.title}${due ? ` (${due})` : ''}`;
-  return `  ${String(task.fields.status).padEnd(7)} ${task.id}  ${task.fields.title}  ${due}`.trimEnd();
+  if (short) return `${store.PRIORITY_LABELS[store.priorityOf(task)]} ${task.fields.title}${due ? ` (${due})` : ''}`;
+  return `  ${String(task.fields.status).padEnd(7)} ${task.id}  ${store.PRIORITY_LABELS[store.priorityOf(task)]} ${task.fields.title}  ${due}`.trimEnd();
 }
 
 function projectLine(project: Entry): string {
   const reason = project.fields['status-reason'] ? `: ${project.fields['status-reason']}` : '';
-  return `${project.id} — ${project.fields.title}  [${project.fields.status}${reason}]  ${project.fields.area}  deadline ${project.fields.deadline ?? 'unknown'}`;
+  return `${project.id} — ${project.fields.title}  [${project.fields.status}${reason}]  ${project.fields.area}  ${store.PRIORITY_LABELS[store.priorityOf(project)]}  deadline ${project.fields.deadline ?? 'unknown'}`;
 }
 
 function formatWeek(start: string, end: string, events: LogEvent[]): string {
@@ -107,7 +117,7 @@ const commands: Record<string, () => void | Promise<void>> = {
     const [what, first, second] = rest;
     if (what === 'project') {
       const entry = store.createProject(root, need(first, 'project slug'), {
-        area: need(text('area'), '--area work|personal'), title: text('title'), deadline: text('deadline'),
+        area: need(text('area'), '--area work|personal'), title: text('title'), deadline: text('deadline'), priority: text('priority'), body: text('body'),
       });
       output(summary(entry), entry.dir);
       return;
@@ -115,7 +125,7 @@ const commands: Record<string, () => void | Promise<void>> = {
     if (what === 'task') {
       if (text('every')) parseEvery(text('every')!);
       const entry = store.createTask(root, need(first, 'project'), need(second, 'task slug'), {
-        title: text('title'), due: text('due'), repo: text('repo'), branch: text('branch'), body: text('body'),
+        title: text('title'), priority: text('priority'), due: text('due'), repo: text('repo'), branch: text('branch'), body: text('body'),
         every: text('every'), run: text('run'), agent: text('agent'), command: text('command'),
       });
       syncIfRecurring(entry);
@@ -167,6 +177,8 @@ const commands: Record<string, () => void | Promise<void>> = {
     const projects = store.listProjects(root).filter(project => !text('area') || project.fields.area === text('area'));
     const shownProjectIds = new Set(projects.map(project => project.id));
     const statusFilter = text('status');
+    const priorityFilter = text('priority');
+    if (priorityFilter !== undefined) store.assertOneOf(priorityFilter, options.tasks || text('due-before') ? store.TASK_PRIORITIES : store.PROJECT_PRIORITIES, '--priority');
     if (statusFilter !== undefined) {
       const allowed = options.tasks || text('due-before') ? store.TASK_STATUSES : store.PROJECT_STATUSES;
       store.assertOneOf(statusFilter, allowed, '--status');
@@ -174,16 +186,17 @@ const commands: Record<string, () => void | Promise<void>> = {
     const matchesStatus = (status: unknown) => (statusFilter ? status === statusFilter : options.all || isOpen(status));
     if (options.tasks || text('due-before')) {
       const limit = text('due-before') ? dueLimit(text('due-before')!) : null;
-      const tasks = store.listTasks(root, text('project')).filter(task =>
+      const tasks = sortEntries(store.listTasks(root, text('project')).filter(task =>
         shownProjectIds.has(task.project)
         && matchesStatus(task.fields.status)
-        && (!limit || (store.DATE.test(String(task.fields.due)) && String(task.fields.due) <= limit)));
+        && (!priorityFilter || store.priorityOf(task) === priorityFilter)
+        && (!limit || (store.DATE.test(String(task.fields.due)) && String(task.fields.due) <= limit))));
       output(tasks.map(summary), tasks.map(task => taskLine(task, Boolean(options.short)).trim()).join('\n') || 'No tasks.');
       return;
     }
-    const shown = projects.filter(project => (!text('project') || project.id === text('project')) && matchesStatus(project.fields.status));
+    const shown = sortEntries(projects.filter(project => (!text('project') || project.id === text('project')) && matchesStatus(project.fields.status) && (!priorityFilter || store.priorityOf(project) === priorityFilter)));
     const withTasks = shown.map(project => ({
-      project, tasks: store.listTasks(root, project.id).filter(task => options.all || isOpen(task.fields.status)),
+      project, tasks: sortEntries(store.listTasks(root, project.id).filter(task => options.all || isOpen(task.fields.status))),
     }));
     output(
       withTasks.map(({ project, tasks }) => ({ ...summary(project), tasks: tasks.map(summary) })),
@@ -202,7 +215,7 @@ const commands: Record<string, () => void | Promise<void>> = {
       { ...summary(entry), body: entry.body, reverseLinks: reverse, rules, tasks: tasks.map(summary), recentLog },
       [
         `${entry.id} (${entry.kind})`,
-        ...Object.entries(entry.fields).map(([key, value]) => `${key}: ${typeof value === 'string' || value === null ? value ?? '' : JSON.stringify(value)}`),
+        ...Object.entries({ ...entry.fields, priority: store.PRIORITY_LABELS[store.priorityOf(entry)] }).map(([key, value]) => `${key}: ${typeof value === 'string' || value === null ? value ?? '' : JSON.stringify(value)}`),
         `path: ${entry.dir}`,
         ...(tasks.length ? ['', 'Tasks:', ...tasks.map(task => taskLine(task, false))] : []),
         ...(reverse.length ? ['', 'Linked from:', ...reverse.map(link => `  ${link.from} (${link.type})`)] : []),
@@ -283,6 +296,22 @@ const commands: Record<string, () => void | Promise<void>> = {
     console.log(`2b dashboard on http://127.0.0.1:${port} (Ctrl-C to stop)`);
   },
 
+  delete() {
+    const result = trashTask(root, store.resolve(root, need(rest[0], 'task')));
+    output(result, result.trashId);
+  },
+
+  restore() {
+    const entry = restoreTask(root, need(rest[0], 'trash id'));
+    output(summary(entry), `${entry.id}: restored (paused)`);
+  },
+
+  trash() {
+    if (rest[0] !== 'ls') throw new store.UserError('usage: 2b trash ls');
+    const items = listTrash(root);
+    output(items, items.map(item => `${item.trashId}  ${item.project}/${item.task}  ${item.deletedAt}`).join('\n') || 'Trash is empty.');
+  },
+
   run() {
     const entry = store.resolve(root, need(rest[0], 'task'));
     const result = runTask(root, entry);
@@ -354,7 +383,7 @@ async function main(): Promise<void> {
     options: Object.fromEntries([
       ...['json', 'tasks', 'all', 'short', 'open', 'dry-run', 'help'].map(name => [name, { type: 'boolean' as const }]),
       ...['area', 'title', 'deadline', 'due', 'repo', 'branch', 'reason', 'status', 'project', 'due-before', 'about', 'why',
-        'key', 'every', 'run', 'agent', 'command', 'body', 'port'].map(name => [name, { type: 'string' as const }]),
+        'priority', 'key', 'every', 'run', 'agent', 'command', 'body', 'port'].map(name => [name, { type: 'string' as const }]),
     ]),
   });
   options = parsed.values as Options;
