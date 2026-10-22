@@ -104,3 +104,42 @@ test('ordinary query strings, Unicode paths, and malicious titles remain safe', 
   assert.match(renderMarkdown('[x](<notes/日本語 a.md>)'), /href="notes\/%E6%97%A5%E6%9C%AC%E8%AA%9E%20a.md"/);
   assert.match(renderMarkdown('![x](image.png "<img onerror=bad>")'), /title="&lt;img onerror=bad&gt;"/);
 });
+
+test('closing delimiters respect nested emphasis, code spans, and escapes', () => {
+  assert.equal(renderMarkdown('*a **b** c*'), '<p><em>a <strong>b</strong> c</em></p>');
+  assert.equal(renderMarkdown('**a `b**c` d**'), '<p><strong>a <code>b**c</code> d</strong></p>');
+  assert.equal(renderMarkdown('*a \\* b*'), '<p><em>a * b</em></p>');
+  assert.equal(renderMarkdown('***both***'), '<p><strong><em>both</em></strong></p>');
+});
+test('link labels respect code spans, escaped brackets, and balanced brackets', () => {
+  assert.equal(renderMarkdown('[`a](b)`](safe)'), '<p><a href="safe"><code>a](b)</code></a></p>');
+  assert.equal(renderMarkdown('[a [b] c](safe)'), '<p><a href="safe">a [b] c</a></p>');
+  assert.equal(renderMarkdown('[a \\] b](safe)'), '<p><a href="safe">a ] b</a></p>');
+});
+
+const performanceCases = [
+  { name: 'heading with 3,200 spaces', source: '# a' + ' '.repeat(3200) + 'x', expected: '<h1 id="a-x">a' + ' '.repeat(3200) + 'x</h1>' },
+  { name: 'email with 40,000 dots', source: '<a@' + '.'.repeat(40000) + ' ', expected: '<p>&lt;a@' + '.'.repeat(40000) + ' </p>' },
+  { name: '80,000 unmatched backticks', source: '`'.repeat(80000), expected: '<pre><code></code></pre>' },
+  { name: '50,000 opening brackets', source: '['.repeat(50000), expected: '<p>' + '['.repeat(50000) + '</p>' },
+  { name: '50,000 stars', source: '*'.repeat(50000), expected: '<hr>' },
+  { name: '10,000-line list', source: Array.from({ length: 10000 }, (_, itemNumber) => '- item ' + itemNumber).join('\n'), expected: '<ul>\n' + Array.from({ length: 10000 }, (_, itemNumber) => '<li>item ' + itemNumber + '</li>').join('\n') + '\n</ul>' },
+  { name: '80,000 unmatched inline backticks', source: 'text ' + '`'.repeat(80000), expected: '<p>text ' + '`'.repeat(80000) + '</p>' },
+  { name: '50,000 inline stars', source: 'text ' + '*'.repeat(50000), expected: '<p>text ' + '*'.repeat(50000) + '</p>' },
+];
+for (const { name, source, expected } of performanceCases) {
+  test('renders ' + name + ' in less than 200 ms', context => {
+    const started = performance.now();
+    const html = renderMarkdown(source);
+    const elapsed = performance.now() - started;
+    context.diagnostic(name + ': ' + elapsed.toFixed(3) + ' ms');
+    assert.equal(html, expected);
+    assert.ok(elapsed < 200, name + ' took ' + elapsed.toFixed(3) + ' ms');
+  });
+}
+
+test('links keep all following text and formatting', () => {
+  assert.equal(renderMarkdown('[x](safe) tail'), '<p><a href="safe">x</a> tail</p>');
+  assert.equal(renderMarkdown('[x](https://example.com)*tail*'), '<p><a href="https://example.com" rel="noopener noreferrer" target="_blank">x</a><em>tail</em></p>');
+  assert.equal(renderMarkdown('![x](safe.png)tail'), '<p><img src="safe.png" alt="x">tail</p>');
+});

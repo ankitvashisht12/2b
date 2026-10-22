@@ -64,79 +64,180 @@ function safeUrl(path: string, baseUrl: string): { url: string; external: boolea
   return { url, external: !!resolvedScheme && /^https?$/i.test(resolvedScheme[1]) };
 }
 
-function inline(source: string, baseUrl: string, depth = 0, allowLinks = true): string {
-  if (depth > 40) return escapeHtml(source);
-  const output: string[] = [];
+type InlineToken = {
+  start: number;
+  end: number;
+  html?: string;
+  marker?: string;
+  remaining?: number;
+  opening?: string[];
+  closing?: string[];
+};
+
+function protectedTokens(source: string): Map<number, InlineToken> {
+  const tickRuns = new Map<number, { starts: number[]; cursor: number }>();
+  for (let position = 0; position < source.length;) {
+    if (source[position] !== '`') { position++; continue; }
+    const start = position;
+    while (source[position] === '`') position++;
+    const length = position - start;
+    const runs = tickRuns.get(length) ?? { starts: [], cursor: 0 };
+    runs.starts.push(start);
+    tickRuns.set(length, runs);
+  }
+  const tokens = new Map<number, InlineToken>();
   let position = 0;
   while (position < source.length) {
-    const remaining = source.slice(position);
-    const escaped = /^\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/.exec(remaining);
-    if (escaped) { output.push(escapeHtml(escaped[1])); position += escaped[0].length; continue; }
-    const ticks = /^`+/.exec(remaining);
-    if (ticks) {
-      let closing = source.indexOf(ticks[0], position + ticks[0].length);
-      while (closing >= 0 && (source[closing - 1] === '`' || source[closing + ticks[0].length] === '`')) {
-        closing = source.indexOf(ticks[0], closing + ticks[0].length);
+    const start = position;
+    const character = source[position];
+    if (character === '\\' && /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(source[position + 1] ?? '')) {
+      tokens.set(start, { start, end: position + 2, html: escapeHtml(source[position + 1]) });
+      position += 2;
+      continue;
+    }
+    if (character === '`') {
+      while (source[position] === '`') position++;
+      const length = position - start;
+      const runs = tickRuns.get(length);
+      if (runs) {
+        while (runs.cursor < runs.starts.length && runs.starts[runs.cursor] < position) runs.cursor++;
+        const closing = runs.starts[runs.cursor];
+        if (closing !== undefined) {
+          tokens.set(start, { start, end: closing + length, html: `<code>${escapeHtml(source.slice(position, closing).replace(/\n/g, ' '))}</code>` });
+          position = closing + length;
+          continue;
+        }
       }
-      if (closing >= 0) {
-        output.push(`<code>${escapeHtml(source.slice(position + ticks[0].length, closing).replace(/\n/g, ' '))}</code>`);
-        position = closing + ticks[0].length;
+      tokens.set(start, { start, end: position });
+      continue;
+    }
+    position++;
+  }
+  return tokens;
+}
+
+function inlineTokens(source: string, baseUrl: string, depth: number, allowLinks: boolean): InlineToken[] {
+  const protectedSpans = protectedTokens(source);
+  const brackets: number[] = [];
+  const closingBrackets = new Map<number, number>();
+  for (let position = 0; position < source.length;) {
+    const protectedSpan = protectedSpans.get(position);
+    if (protectedSpan) { position = protectedSpan.end; continue; }
+    if (source[position] === '[') brackets.push(position);
+    else if (source[position] === ']' && brackets.length) closingBrackets.set(brackets.pop()!, position);
+    position++;
+  }
+  const tokens: InlineToken[] = [];
+  let position = 0;
+  while (position < source.length) {
+    const start = position;
+    const character = source[position];
+    const protectedSpan = protectedSpans.get(position);
+    if (protectedSpan) {
+      tokens.push(protectedSpan);
+      position = protectedSpan.end;
+      continue;
+    }
+    const image = source.startsWith('![', position);
+    const labelStart = position + (image ? 1 : 0);
+    const labelEnd = closingBrackets.get(labelStart);
+    if ((image || allowLinks) && labelEnd !== undefined && source[labelEnd + 1] === '(') {
+      const destination = destinationAt(source, labelEnd + 2);
+      if (destination) {
+        const label = source.slice(labelStart + 1, labelEnd);
+        const safe = safeUrl(destination.url, baseUrl);
+        let html = escapeHtml(source.slice(start, destination.end));
+        if (safe) {
+          const title = destination.title === undefined ? '' : ` title="${escapeHtml(destination.title)}"`;
+          html = image
+            ? `<img src="${escapeHtml(safe.url)}" alt="${escapeHtml(unescapeMarkdown(label))}"${title}>`
+            : `<a href="${escapeHtml(safe.url)}"${title}${safe.external ? ' rel="noopener noreferrer" target="_blank"' : ''}>${inline(label, baseUrl, depth + 1, false)}</a>`;
+        }
+        position = destination.end;
+        tokens.push({ start, end: position, html });
         continue;
       }
     }
-    const image = remaining.startsWith('![');
-    if (image || (allowLinks && remaining.startsWith('['))) {
-      const labelStart = position + (image ? 2 : 1);
-      const labelEnd = source.indexOf('](', labelStart);
-      if (labelEnd >= 0) {
-        const destination = destinationAt(source, labelEnd + 2);
-        if (destination) {
-          const label = source.slice(labelStart, labelEnd);
-          const safe = safeUrl(destination.url, baseUrl);
-          if (safe) {
-            const title = destination.title === undefined ? '' : ` title="${escapeHtml(destination.title)}"`;
-            output.push(image
-              ? `<img src="${escapeHtml(safe.url)}" alt="${escapeHtml(unescapeMarkdown(label))}"${title}>`
-              : `<a href="${escapeHtml(safe.url)}"${title}${safe.external ? ' rel="noopener noreferrer" target="_blank"' : ''}>${inline(label, baseUrl, depth + 1, false)}</a>`);
-          } else output.push(escapeHtml(source.slice(position, destination.end)));
-          position = destination.end;
-          continue;
-        }
-      }
-    }
-    if (allowLinks) {
-      const angle = /^<((?:https?:\/\/|mailto:)[^<>\s]+|[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>/i.exec(remaining);
-      const bare = /^(https?:\/\/[^\s<>]+)/i.exec(remaining);
-      const candidate = angle?.[1] ?? bare?.[1].replace(/[.,;:!?]+$/, '');
-      if (candidate && (angle || position === 0 || /[\s(]/.test(source[position - 1]))) {
-        const safe = safeUrl(candidate.includes('@') && !/^[a-z]+:/i.test(candidate) ? `mailto:${candidate}` : candidate, baseUrl);
+    if (allowLinks && (character === '<' || ((position === 0 || /[\s(]/.test(source[position - 1])) && /^https?:\/\//i.test(source.slice(position, position + 8))))) {
+      const angle = character === '<';
+      let end = position + (angle ? 1 : 0);
+      while (end < source.length && !/[<>\s]/.test(source[end])) end++;
+      let candidate = source.slice(position + (angle ? 1 : 0), end);
+      const at = candidate.indexOf('@');
+      const dot = candidate.lastIndexOf('.');
+      const email = at > 0 && at === candidate.lastIndexOf('@') && dot > at && dot < candidate.length - 1;
+      if ((!angle || source[end] === '>') && (/^(?:https?:\/\/|mailto:)/i.test(candidate) || (angle && email))) {
+        if (!angle) candidate = candidate.replace(/[.,;:!?]+$/, '');
+        const safe = safeUrl(email && !/^[a-z]+:/i.test(candidate) ? `mailto:${candidate}` : candidate, baseUrl);
         if (safe) {
-          output.push(`<a href="${escapeHtml(safe.url)}"${safe.external ? ' rel="noopener noreferrer" target="_blank"' : ''}>${escapeHtml(candidate)}</a>`);
-          position += angle ? angle[0].length : candidate.length;
+          position = angle ? end + 1 : start + candidate.length;
+          tokens.push({ start, end: position, html: `<a href="${escapeHtml(safe.url)}"${safe.external ? ' rel="noopener noreferrer" target="_blank"' : ''}>${escapeHtml(candidate)}</a>` });
           continue;
         }
       }
     }
-    let formatted = false;
-    for (const [delimiter, tag] of [['***', 'strong'], ['___', 'strong'], ['**', 'strong'], ['__', 'strong'], ['~~', 'del'], ['*', 'em'], ['_', 'em']]) {
-      if (!remaining.startsWith(delimiter) || /\s/.test(remaining[delimiter.length] ?? ' ')) continue;
-      if (delimiter.includes('_') && /[\p{L}\p{N}]/u.test(source[position - 1] ?? '')) continue;
-      let closing = source.indexOf(delimiter, position + delimiter.length);
-      if (delimiter.length === 2 && delimiter !== '~~' && closing >= 0 && source[closing + 2] === delimiter[0]) closing++;
-      if (closing < 0 || /\s/.test(source[closing - 1])) continue;
-      const content = inline(source.slice(position + delimiter.length, closing), baseUrl, depth + 1, allowLinks);
-      output.push(delimiter.length === 3 ? `<strong><em>${content}</em></strong>` : `<${tag}>${content}</${tag}>`);
-      position = closing + delimiter.length;
-      formatted = true;
-      break;
+    if (character === '*' || character === '_' || character === '~') {
+      while (source[position] === character) position++;
+      tokens.push({ start, end: position, marker: character, remaining: position - start, opening: [], closing: [] });
+      continue;
     }
-    if (formatted) continue;
-    if (source[position] === '\n') {
-      output.push('<br>');
-    } else output.push(escapeHtml(source[position]));
+    if (character === '\n') {
+      tokens.push({ start, end: ++position, html: '<br>' });
+      continue;
+    }
     position++;
+    if (!/[\[\]!<\\]/.test(character)) {
+      while (position < source.length && !/[`\\[\]!*_~<\nhH]/.test(source[position])) position++;
+    }
+    tokens.push({ start, end: position });
   }
-  return output.join('');
+  return tokens;
+}
+
+function formatTokens(tokens: InlineToken[], source: string): string {
+  const openers: InlineToken[] = [];
+  const markerOpeners = new Map<string, InlineToken[]>();
+  function removeOpener(): void {
+    const opener = openers.pop()!;
+    markerOpeners.get(opener.marker!)!.pop();
+  }
+  for (const token of tokens) {
+    if (!token.marker) continue;
+    const marker = token.marker;
+    const previous = source[token.start - 1] ?? ' ';
+    const next = source[token.end] ?? ' ';
+    const canOpen = !/\s/.test(next) && (marker !== '_' || !/[\p{L}\p{N}]/u.test(previous));
+    const canClose = !/\s/.test(previous) && (marker !== '_' || !/[\p{L}\p{N}]/u.test(next));
+    const matching = markerOpeners.get(marker) ?? [];
+    markerOpeners.set(marker, matching);
+    if (canClose) {
+      while (token.remaining! >= (marker === '~' ? 2 : 1) && matching.length) {
+        const opener = matching[matching.length - 1];
+        while (openers[openers.length - 1] !== opener) removeOpener();
+        const available = Math.min(opener.remaining!, token.remaining!);
+        const count = marker === '~' ? 2 : Math.min(available, 3);
+        const opening = marker === '~' ? '<del>' : count === 3 ? '<strong><em>' : count === 2 ? '<strong>' : '<em>';
+        const closing = marker === '~' ? '</del>' : count === 3 ? '</em></strong>' : count === 2 ? '</strong>' : '</em>';
+        opener.opening!.push(opening);
+        token.closing!.push(closing);
+        opener.remaining! -= count;
+        token.remaining! -= count;
+        if (opener.remaining! < (marker === '~' ? 2 : 1)) removeOpener();
+      }
+    }
+    if (canOpen && token.remaining! >= (marker === '~' ? 2 : 1)) {
+      openers.push(token);
+      matching.push(token);
+    }
+  }
+  return tokens.map(token => token.html ?? (token.marker
+    ? token.closing!.join('') + token.marker.repeat(token.remaining!) + token.opening!.reverse().join('')
+    : escapeHtml(source.slice(token.start, token.end)))).join('');
+}
+
+function inline(source: string, baseUrl: string, depth = 0, allowLinks = true): string {
+  if (depth > 40) return escapeHtml(source);
+  return formatTokens(inlineTokens(source, baseUrl, depth, allowLinks), source);
 }
 
 const listPattern = /^( *)([-+*]|\d+[.)])\s+(.*)$/;
@@ -172,6 +273,23 @@ function tableAlignment(line: string): string[] | null {
     : null;
 }
 
+function headingAt(line: string): { level: number; content: string } | null {
+  let position = 0;
+  while (position < 3 && line[position] === ' ') position++;
+  const prefix = position;
+  while (line[position] === '#' && position - prefix < 7) position++;
+  const level = position - prefix;
+  if (level < 1 || level > 6 || !/\s/.test(line[position] ?? '')) return null;
+  while (position < line.length && /\s/.test(line[position])) position++;
+  let end = line.length;
+  while (end > position && /\s/.test(line[end - 1])) end--;
+  let closing = end;
+  while (closing > position && line[closing - 1] === '#') closing--;
+  if (closing < end && (closing === position || /\s/.test(line[closing - 1]))) end = closing;
+  while (end > position && /\s/.test(line[end - 1])) end--;
+  return { level, content: line.slice(position, end) };
+}
+
 function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0): string {
   if (depth > 40) return `<pre>${escapeHtml(lines.join('\n'))}</pre>`;
   const output: string[] = [];
@@ -196,14 +314,14 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
       output.push(`<pre><code${attribute}>${escapeHtml(code.join('\n') + (code.length ? '\n' : ''))}</code></pre>`);
       continue;
     }
-    const heading = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    const heading = headingAt(line);
     if (heading) {
-      const slugBase = unescapeMarkdown(heading[2]).toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
+      const slugBase = unescapeMarkdown(heading.content).toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
       let slug = slugBase;
       let suffix = 2;
       while (slugs.has(slug)) slug = `${slugBase}-${suffix++}`;
       slugs.add(slug);
-      output.push(`<h${heading[1].length} id="${escapeHtml(slug)}">${inline(heading[2], baseUrl)}</h${heading[1].length}>`);
+      output.push(`<h${heading.level} id="${escapeHtml(slug)}">${inline(heading.content, baseUrl)}</h${heading.level}>`);
       position++;
       continue;
     }
