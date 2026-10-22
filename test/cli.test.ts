@@ -20,6 +20,19 @@ function makeRunner(environment: NodeJS.ProcessEnv = {}) {
   return Object.assign(run, { root });
 }
 
+test('project and task creation save readme bodies supplied through the CLI', () => {
+  const twob = makeRunner();
+  assert.equal(twob('init').code, 0);
+  const projectBody = 'What: Build a tool. Why: Save time. Current state: Planning.';
+  const taskBody = 'What: Review the design. Why: Check scope. Current state: Ready.';
+  const project = twob('new', 'project', 'sample', '--area', 'work', '--body', projectBody);
+  assert.equal(project.code, 0, project.err);
+  assert.ok(fs.readFileSync(path.join(project.out, 'readme.md'), 'utf8').includes(projectBody));
+  const task = twob('new', 'task', 'sample', 'review', '--body', taskBody);
+  assert.equal(task.code, 0, task.err);
+  assert.ok(fs.readFileSync(path.join(task.out, 'readme.md'), 'utf8').includes(taskBody));
+});
+
 test('end to end: init, create, status, list, rules', () => {
   const twob = makeRunner();
   assert.match(twob('ls').err, /run "2b init"/);

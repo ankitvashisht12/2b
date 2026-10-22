@@ -20,8 +20,8 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 
 | The user says | You run |
 |---|---|
-| "New project X" | `2b new project <slug> --area work --title "X"` |
-| "Add a task to X" | `2b new task <project> <slug> --title "..." [--due yyyy-mm-dd]` |
+| "New project X" | `2b new project <slug> --area work --title "X" --body "<what, why, current state>"` |
+| "Add a task to X" | `2b new task <project> <slug> --title "..." --body "<what, why, current state>" [--due yyyy-mm-dd]` |
 | "Pause X because Y" | `2b status <project> paused --reason "Y"` |
 | "Task T depends on U" | `2b add <T> link <U> depends-on` |
 | "This PR is part of T" | `2b add <T> pr <url>` |
@@ -56,8 +56,8 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 
 ## Recurring tasks
 
-- "Every day at 7pm, do X" → `2b new task <project> <slug> --title "..." --every "daily 19:00" --run agent --body "<the full instruction>"`
-- "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --title "Open dashboard" --every "weekdays 14:00" --run command --command "2b dash --open"`
+- "Every day at 7pm, do X" → `2b new task <project> <slug> --title "..." --every "daily 19:00" --run agent --body "<what, why, current state, and the full instruction>"`
+- "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --title "Open dashboard" --every "weekdays 14:00" --run command --command "2b dash --open" --body "What: Open the dashboard on weekdays. Why: Review active work. Current state: Scheduled."`
 - `2b delete <task>` moves a recurring task to `.trash/` and stops its schedule. It prints a trash id.
 - `2b trash ls` lists deleted tasks. `2b restore <trashId>` brings one back as `paused`, with reason `restored from trash`. Resume it with `2b status <task> doing` when ready.
 - Schedule format: `daily HH:MM`, `weekdays HH:MM`, `mon,fri HH:MM`, `hourly`.
