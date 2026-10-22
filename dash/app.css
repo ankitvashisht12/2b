@@ -247,7 +247,7 @@ details.section > summary .count { margin-left: .5rem; }
 .toasts { position: fixed; bottom: 1.5rem; left: calc(var(--rail-width) + 1.5rem); z-index: 90; display: grid; gap: .5rem; max-width: min(30rem,calc(100vw - 2rem)); }
 .toast { display: flex; gap: 1rem; align-items: center; background: var(--ink); color: var(--canvas); box-shadow: var(--shadow); padding: .75rem 1rem; border-radius: 7px; animation: toast-in 180ms ease-out; }
 .toast.error { background: var(--red); color: var(--surface); }
-.toast button { color: inherit; text-decoration: underline; font-weight: 600; margin-left: auto; white-space: nowrap; }
+.toast button, .toast a { color: inherit; text-decoration: underline; font-weight: 600; margin-left: auto; white-space: nowrap; }
 .toast button:hover { background: #ffffff20; }
 .skeleton { background: var(--hover); border-radius: 4px; height: .625rem; width: 65%; }
 .skeleton-row { min-height: 3.5rem; border-bottom: 1px solid var(--line); display: flex; gap: 1.5rem; align-items: center; }

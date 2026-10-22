@@ -76,7 +76,7 @@ const priorityRank = priority => ({ high: 1, med: 2, low: 3, P1: 1, P2: 2, P3: 3
 const store = {
   data: null, notes: null, trash: null, entries: new Map(), documents: new Map(), loading: true, refreshing: false,
   error: '', notesError: '', entryErrors: new Map(), selectedId: '', route: null, requestSequence: 0, entryRequests: new Set(), rangeKey: '',
-  runningJobs: new Set(), popover: null, popoverAnchor: null, returnFocus: null, paletteReturnFocus: null, toasts: new Map(), queued: new Map(), pending: new Set(),
+  runningJobs: new Map(), writeRevisions: new Map(), popover: null, popoverAnchor: null, returnFocus: null, paletteReturnFocus: null, toasts: new Map(), pending: new Set(), documentReturnFocus: null,
 };
 const api = {
   async request(url, options = {}) {
@@ -116,20 +116,40 @@ function navigate(path, updates = {}, replace = false) {
 function setFilter(name, value, replace = false) { navigate(store.route.path, { [name]: value, selected: null }, replace); }
 function mainPath() { return store.route.drawer ? store.route.params.get('context') || 'home' : store.route.path.replace(/^\//, ''); }
 function navigateView(view) { closePopover(false); closePalette(false); navigate(view, { context: null, note: null, doc: null, runlog: null, full: null, selected: null }); }
-function openEntry(id) {
-  if (getEntry(id)?.pending) { showToast('This task will be created when the Undo period ends.'); return; }
-  const isProject = store.data?.projects.some(project => project.id === id);
-  store.returnFocus = document.activeElement;
+function focusLocator(control) {
+  if (!control) return '';
+  if (control.id) return `#${CSS.escape(control.id)}`;
+  const attributes = ['data-open', 'data-note', 'data-document', 'data-runlog', 'data-row', 'data-note-row', 'data-action', 'data-id'];
+  return attributes.filter(name => control.hasAttribute(name)).map(name => `[${name}="${CSS.escape(control.getAttribute(name))}"]`).join('');
+}
+function drawerIsOpen(route = store.route) {
+  return Boolean(route?.drawer || ['note', 'doc', 'runlog'].some(name => route?.params.get(name)));
+}
+function rememberDrawerOpener(control, fallback = '') {
+  if (!drawerIsOpen()) store.returnFocus = focusLocator(control) || fallback;
+}
+function restoreFocus(locator) {
+  (locator && document.querySelector(locator) || element('main')).focus({ preventScroll: true });
+}
+function openEntry(id, opener = document.activeElement) {
+  const project = store.data?.projects.some(project => project.id === id);
+  rememberDrawerOpener(opener, `[data-open="${CSS.escape(id)}"]`);
   closePopover(false);
-  if (isProject) navigate(`p/${encodeURIComponent(id)}`, { context: null, note: null, doc: null, runlog: null, full: null });
+  if (project) navigate(`p/${encodeURIComponent(id)}`, { context: null, note: null, doc: null, runlog: null, full: null });
   else navigate(`t/${id.split('/').map(encodeURIComponent).join('/')}`, { context: mainPath(), note: null, doc: null, runlog: null, selected: id });
 }
 function closeDrawer() {
   navigate(mainPath(), { context: null, note: null, doc: null, runlog: null, full: null });
-  requestAnimationFrame(() => {
-    if (store.returnFocus?.isConnected) store.returnFocus.focus();
-    else document.querySelector(`[data-open="${CSS.escape(store.selectedId)}"]`)?.focus();
-  });
+}
+function openDocument(path, runlog = false, id = '', opener = document.activeElement) {
+  if (drawerIsOpen()) store.documentReturnFocus = focusLocator(opener);
+  else rememberDrawerOpener(opener);
+  const target = runlog ? `t/${id.split('/').map(encodeURIComponent).join('/')}` : store.route.path;
+  navigate(target, { ...(runlog ? { context: mainPath() } : {}), doc: runlog ? null : path, runlog: runlog ? path : null });
+}
+function closeDocument() {
+  if (store.route.drawer || store.route.params.get('note')) navigate(store.route.path, { doc: null, runlog: null });
+  else closeDrawer();
 }
 function getEntry(id) {
   const summary = [...(store.data?.projects || []), ...(store.data?.tasks || [])].find(entry => entry.id === id);
@@ -204,6 +224,26 @@ function renderHome() {
     section('On hold', holds.length ? `<div class="hold-list">${holds.map(entry => `<div class="hold-row" data-row="${attribute(entry.id)}" tabindex="0">${statusChip(entry)}<div><button class="task-title" data-open="${attribute(entry.id)}">${escapeHtml(entry.title)}</button><p class="reason">${escapeHtml(entry.statusReason || 'No reason recorded.')}</p></div>${priorityChip(entry)}</div>`).join('')}</div>` : '<p class="empty-inline">No blocked tasks or paused projects.</p>', holds.length) +
     section('Due soon', dueSoon.length ? `<div class="task-list">${dueSoon.map(entry => taskRow(entry, entry.type === 'project')).join('')}</div>` : hasDates ? '<p class="empty-inline">Nothing due in the next 7 days.</p>' : '<p class="empty-inline">No due dates yet — press <kbd>d</kbd> on a task to set one.</p>', dueSoon.length, '<button class="text-button" data-view="due">See dates ' + icon('right') + '</button>'));
 }
+function renderProjectRow(project) {
+  const counts = project.taskCounts;
+  const progress = Math.round(counts.done / (counts.total || 1) * 100);
+  return `<tr class="table-row ${store.selectedId === project.id ? 'selected' : ''}" data-row="${attribute(project.id)}" tabindex="0">
+    <td class="project-name-cell"><div class="project-name">
+      <span class="area-mark ${attribute(project.area)}" role="img" aria-label="${attribute(project.area)}"></span>
+      <button class="project-title" data-open="${attribute(project.id)}">${escapeHtml(project.title)}</button>
+    </div>${project.statusReason ? `<p class="reason">${escapeHtml(project.statusReason)}</p>` : ''}</td>
+    <td>${statusChip(project)}</td><td>${priorityChip(project)}</td><td class="numeric">${counts.open} / ${counts.total}</td>
+    <td><div class="progress" role="progressbar" aria-label="${attribute(project.title)} tasks complete" aria-valuemin="0" aria-valuemax="${counts.total || 1}" aria-valuenow="${counts.done}"><span style="width:${progress}%"></span></div></td>
+    <td class="numeric">${formatDate(project.nextDue)}</td><td>${dueChip(project)}</td>
+    <td class="numeric" title="${attribute(project.lastActivity)}">${escapeHtml(relativeTime(project.lastActivity))}</td>
+  </tr>`;
+}
+function renderProjectTable(projects, sort, descending) {
+  const columns = [['title', 'Project'], ['status', 'Status'], ['priority', 'Priority'], ['tasks', 'Open / total'], ['progress', 'Progress'], ['nextDue', 'Next due'], ['deadline', 'Deadline'], ['lastActivity', 'Activity']];
+  const headings = columns.map(([key, title]) => `<th scope="col" ${sort === key ? `aria-sort="${descending ? 'descending' : 'ascending'}"` : ''}>
+    <button data-sort="${key}">${title}${sort === key ? icon('sort') : ''}</button></th>`).join('');
+  return `<div class="table-scroll"><table><thead><tr>${headings}</tr></thead><tbody>${projects.map(renderProjectRow).join('')}</tbody></table></div>`;
+}
 function renderProjects() {
   const sort = store.route.params.get('sort') || 'priority';
   const descending = store.route.params.get('direction') === 'desc';
@@ -211,12 +251,11 @@ function renderProjects() {
     const comparison = sort === 'priority' ? compareProjects(first, second) : sort === 'tasks' ? first.taskCounts.open - second.taskCounts.open : sort === 'progress' ? (first.taskCounts.done / (first.taskCounts.total || 1)) - (second.taskCounts.done / (second.taskCounts.total || 1)) : String(first[sort] || '9999').localeCompare(String(second[sort] || '9999'));
     return (descending ? -1 : 1) * comparison;
   });
-  const table = items => `<div class="table-scroll"><table><thead><tr>${[['title', 'Project'], ['status', 'Status'], ['priority', 'Priority'], ['tasks', 'Open / total'], ['progress', 'Progress'], ['nextDue', 'Next due'], ['deadline', 'Deadline'], ['lastActivity', 'Activity']].map(([key, title]) => `<th scope="col" ${sort === key ? `aria-sort="${descending ? 'descending' : 'ascending'}"` : ''}><button data-sort="${key}">${title}${sort === key ? icon('sort') : ''}</button></th>`).join('')}</tr></thead><tbody>${items.map(project => `<tr class="table-row ${store.selectedId === project.id ? 'selected' : ''}" data-row="${attribute(project.id)}" tabindex="0"><td class="project-name-cell"><div class="project-name"><span class="area-mark ${attribute(project.area)}" role="img" aria-label="${attribute(project.area)}"></span><button class="project-title" data-open="${attribute(project.id)}">${escapeHtml(project.title)}</button></div>${project.statusReason ? `<p class="reason">${escapeHtml(project.statusReason)}</p>` : ''}</td><td>${statusChip(project)}</td><td>${priorityChip(project)}</td><td class="numeric">${project.taskCounts.open} / ${project.taskCounts.total}</td><td><div class="progress" role="progressbar" aria-label="${attribute(project.title)} tasks complete" aria-valuemin="0" aria-valuemax="${project.taskCounts.total || 1}" aria-valuenow="${project.taskCounts.done}"><span style="width:${Math.round(project.taskCounts.done / (project.taskCounts.total || 1) * 100)}%"></span></div></td><td class="numeric">${formatDate(project.nextDue)}</td><td>${dueChip(project)}</td><td class="numeric" title="${attribute(project.lastActivity)}">${escapeHtml(relativeTime(project.lastActivity))}</td></tr>`).join('')}</tbody></table></div>`;
   const active = projects.filter(project => project.status === 'active');
   const holds = projects.filter(project => ['paused', 'on-hold'].includes(project.status));
   const done = projects.filter(project => closedStatuses.includes(project.status));
   return pageHeading('Projects', 'The bigger picture, with room for the next step.', `<span class="heading-meta">${store.data.projects.length} projects</span>`) + (!projects.length ? hasFilters() ? emptyFiltered() : emptyState('Your first project starts here', 'Create a project to give related tasks a home.', 'projects', '<pre>2b new project first-project --area personal --title "First project"</pre>') :
-    (active.length ? section('Active', table(active), active.length) : '') + (holds.length ? section('On hold', table(holds), holds.length) : '') + (done.length ? `<details class="section" data-url-details="done" ${store.route.params.get('done') === '1' ? 'open' : ''}><summary>Done <span class="count">${done.length}</span></summary>${table(done)}</details>` : ''));
+    (active.length ? section('Active', renderProjectTable(active, sort, descending), active.length) : '') + (holds.length ? section('On hold', renderProjectTable(holds, sort, descending), holds.length) : '') + (done.length ? `<details class="section" data-url-details="done" ${store.route.params.get('done') === '1' ? 'open' : ''}><summary>Done <span class="count">${done.length}</span></summary>${renderProjectTable(done, sort, descending)}</details>` : ''));
 }
 function renderDescription(entry) {
   const summary = getEntry(entry.id);
@@ -231,7 +270,12 @@ function renderDescription(entry) {
   if (heading?.tagName === 'H1' && heading.textContent.trim() === summary?.title?.trim()) heading.remove();
   return `<div class="prose">${template.innerHTML}</div>`;
 }
-function safeHref(url) { return /^(https?:|mailto:)/i.test(String(url || '')) ? attribute(url) : '#'; }
+function safeHref(value) {
+  try {
+    const url = new URL(value, location.origin);
+    return ['http:', 'https:'].includes(url.protocol) ? attribute(url.href) : '#';
+  } catch { return '#'; }
+}
 function fileUrl(path) { return `/api/file?path=${encodeURIComponent(path)}`; }
 function entryFile(entry, path) { return path.startsWith(`${entry.relativeDir}/`) ? path : `${entry.relativeDir}/${path}`; }
 function renderLinks(entry) {
@@ -361,7 +405,7 @@ function renderJobs() {
     const failed = job.lastResult === 'error';
     const resultLabel = job.lastResult === 'ok' ? 'Passed' : failed ? 'Failed' : 'Not run';
     const paused = ['paused', 'blocked', 'on-hold'].includes(job.status);
-    return `<tr class="table-row" data-row="${attribute(job.id)}" tabindex="0"><td class="project-name-cell"><button class="project-title" data-open="${attribute(job.id)}">${escapeHtml(job.title)}</button><p class="count">${escapeHtml(store.data.projects.find(project => project.id === job.project)?.title || job.project)}</p>${entry.statusReason ? `<p class="reason">${escapeHtml(entry.statusReason)}</p>` : ''}</td><td>${escapeHtml(job.schedule || job.every)}</td><td class="numeric" title="${attribute(job.nextRun || '')}">${job.nextRun ? escapeHtml(relativeTime(job.nextRun)) : 'Paused'}</td><td><span class="result ${failed ? 'error' : ''}">${icon(failed ? 'warning' : job.loaded ? 'check' : 'circle')}${failed ? 'Failed' : job.loaded ? 'Yes' : 'No'}</span></td><td><button class="text-button" ${job.lastLog ? `data-runlog="${attribute(runLogPath(job, job.lastLog))}" data-id="${attribute(job.id)}"` : 'disabled'}>${escapeHtml(formatTimestamp(job.lastRun))}</button><br><span class="result ${failed ? 'error' : job.lastResult === 'ok' ? 'ok' : ''}">${icon(failed ? 'warning' : job.lastResult === 'ok' ? 'check' : 'circle')}${resultLabel}</span></td><td><div class="history-dots">${(job.runs || []).slice(0, 10).map(run => `<button class="history-dot ${run.ok === true ? 'ok' : run.ok === false ? 'error' : ''}" data-runlog="${attribute(runLogPath(job, run.file))}" data-id="${attribute(job.id)}" aria-label="${attribute(formatTimestamp(run.at))}: ${run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unknown result'}"><span></span></button>`).join('') || '<span class="count">No runs</span>'}</div></td><td>${statusChip(entry)}</td><td><div class="job-actions"><button class="secondary-button" data-action="run" data-id="${attribute(job.id)}" ${store.queued.has(`run:${job.id}`) || store.runningJobs.has(job.id) ? 'disabled' : ''}>${icon('play')}${store.runningJobs.has(job.id) ? 'Running…' : store.queued.has(`run:${job.id}`) ? 'Queued…' : 'Run now'}</button><button class="icon-button" aria-label="${paused ? 'Resume' : 'Pause'} ${attribute(job.title)}" ${paused ? 'data-action="resume"' : 'data-popover="pause"'} data-id="${attribute(job.id)}">${icon(paused ? 'play' : 'pause')}</button><button class="icon-button" aria-label="Delete ${attribute(job.title)}" data-popover="delete" ${store.runningJobs.has(job.id) ? 'disabled' : ''} data-id="${attribute(job.id)}">${icon('trash')}</button></div></td></tr>`;
+    return `<tr class="table-row" data-row="${attribute(job.id)}" tabindex="0"><td class="project-name-cell"><button class="project-title" data-open="${attribute(job.id)}">${escapeHtml(job.title)}</button><p class="count">${escapeHtml(store.data.projects.find(project => project.id === job.project)?.title || job.project)}</p>${entry.statusReason ? `<p class="reason">${escapeHtml(entry.statusReason)}</p>` : ''}</td><td>${escapeHtml(job.schedule || job.every)}</td><td class="numeric" title="${attribute(job.nextRun || '')}">${job.nextRun ? escapeHtml(relativeTime(job.nextRun)) : 'Paused'}</td><td><span class="result">${icon(job.loaded ? 'check' : 'circle')}${job.loaded ? 'Yes' : 'No'}</span></td><td><button class="text-button" ${job.lastLog ? `data-runlog="${attribute(runLogPath(job, job.lastLog))}" data-id="${attribute(job.id)}"` : 'disabled'}>${escapeHtml(formatTimestamp(job.lastRun))}</button><br><span class="result ${failed ? 'error' : job.lastResult === 'ok' ? 'ok' : ''}">${icon(failed ? 'warning' : job.lastResult === 'ok' ? 'check' : 'circle')}${resultLabel}</span></td><td><div class="history-dots">${(job.runs || []).slice(0, 10).map(run => `<button class="history-dot ${run.ok === true ? 'ok' : run.ok === false ? 'error' : ''}" data-runlog="${attribute(runLogPath(job, run.file))}" data-id="${attribute(job.id)}" aria-label="${attribute(formatTimestamp(run.at))}: ${run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unknown result'}"><span></span></button>`).join('') || '<span class="count">No runs</span>'}</div></td><td>${statusChip(entry)}</td><td><div class="job-actions"><button class="secondary-button" data-action="run" data-id="${attribute(job.id)}" ${store.runningJobs.has(job.id) ? 'disabled' : ''}>${icon('play')}${store.runningJobs.get(job.id) || 'Run now'}</button><button class="icon-button" aria-label="${paused ? 'Resume' : 'Pause'} ${attribute(job.title)}" ${paused ? 'data-action="resume"' : 'data-popover="pause"'} data-id="${attribute(job.id)}">${icon(paused ? 'play' : 'pause')}</button><button class="icon-button" aria-label="Delete ${attribute(job.title)}" data-popover="delete" ${store.runningJobs.has(job.id) ? 'disabled' : ''} data-id="${attribute(job.id)}">${icon('trash')}</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 function renderInbox() {
@@ -392,7 +436,7 @@ function render() {
   const active = document.activeElement;
   const activeId = active?.id;
   const activeInDrawer = Boolean(active?.closest('.drawer'));
-  const focusAttributes = ['data-popover', 'data-id', 'data-open', 'data-action', 'data-filter', 'data-value'];
+  const focusAttributes = ['data-popover', 'data-id', 'data-open', 'data-note', 'data-document', 'data-runlog', 'data-action', 'data-filter', 'data-value'];
   const activeSelector = active?.tagName === 'BUTTON' ? focusAttributes.filter(name => active.hasAttribute(name)).map(name => `[${name}="${CSS.escape(active.getAttribute(name))}"]`).join('') : active?.hasAttribute('data-row') ? `[data-row="${CSS.escape(active.dataset.row)}"]` : '';
   const selection = active instanceof HTMLInputElement && ['text', 'search'].includes(active.type) ? [active.selectionStart, active.selectionEnd] : null;
   const mainScroll = window.scrollY;
@@ -426,14 +470,37 @@ function renderArtifactGroups(entry) {
   }).join('');
   return `<section class="section"><div class="section-heading"><h2>Artifacts <span class="count">${count}</span></h2><input id="artifact-search" type="search" aria-label="Filter artifacts" placeholder="Filter artifacts…" value="${attribute(store.route.params.get('artifact') || '')}"></div>${html || `<p class="count">${query ? 'No artifacts match this filter.' : 'No artifacts yet.'}</p>`}</section>`;
 }
+function renderTaskMetadata(task, fields) {
+  const prs = fields.prs || task.prs || [];
+  const pullRequests = prs.map((url, index) => `<a href="${safeHref(url)}" target="_blank" rel="noopener noreferrer">PR ${index + 1} ${icon('external')}</a>`).join('');
+  return `<div class="metadata">${statusChip(task)}${priorityChip(task)}${dueChip(task)}<span>Started ${formatDate(task.started)}</span>
+    ${fields.repo ? `<span>${icon('projects')} ${escapeHtml(fields.repo)}</span>` : ''}
+    ${fields.branch ? `<span>${icon('branch')} ${escapeHtml(fields.branch)}</span>` : ''}${pullRequests}</div>`;
+}
+function renderTaskLog(log) {
+  const lines = String(log || '').trim().split('\n').filter(Boolean);
+  const showAll = store.route.params.get('log') === 'all';
+  const contents = (showAll ? lines : lines.slice(-10)).join('\n') || 'No log entries yet.';
+  return `<details class="section" data-url-details="log-open" ${store.route.params.get('log-open') === '1' ? 'open' : ''}>
+    <summary>Log <span class="count">${lines.length} entries</span></summary><pre class="log-block">${escapeHtml(contents)}</pre>
+    ${lines.length > 10 ? `<button class="text-button" data-filter="log" data-value="${showAll ? '' : 'all'}">${showAll ? 'Show last 10' : 'Show all'}</button>` : ''}</details>`;
+}
+function renderJobActions(task) {
+  const running = store.runningJobs.has(task.id);
+  return `<div class="job-actions">
+    <button class="secondary-button" data-action="run" data-id="${attribute(task.id)}" ${running ? 'disabled' : ''}>${icon('play')}${store.runningJobs.get(task.id) || 'Run now'}</button>
+    <button class="secondary-button" ${task.status === 'doing' ? 'data-popover="pause"' : 'data-action="resume"'} data-id="${attribute(task.id)}">${icon(task.status === 'doing' ? 'pause' : 'play')}${task.status === 'doing' ? 'Pause' : 'Resume'}</button>
+    <button class="secondary-button" data-popover="delete" ${running ? 'disabled' : ''} data-id="${attribute(task.id)}">${icon('trash')}Delete job</button></div>`;
+}
 function renderTaskDetail(entry) {
   const task = getEntry(entry.id);
   const fields = entry.fields || {};
-  const prs = fields.prs || task.prs || [];
   const recurring = task.kind === 'recurring' || fields.kind === 'recurring' || entry.job;
-  const logLines = String(entry.log || '').trim().split('\n').filter(Boolean);
-  const allLog = store.route.params.get('log') === 'all';
-  return `<h1>${escapeHtml(task.title)}</h1><div class="metadata">${statusChip(task)}${priorityChip(task)}${dueChip(task)}<span>Started ${formatDate(task.started)}</span>${fields.repo ? `<span>${icon('projects')} ${escapeHtml(fields.repo)}</span>` : ''}${fields.branch ? `<span>${icon('branch')} ${escapeHtml(fields.branch)}</span>` : ''}${prs.map((url, index) => `<a href="${safeHref(url)}" target="_blank" rel="noopener noreferrer">PR ${index + 1} ${icon('external')}</a>`).join('')}</div>${task.statusReason ? `<p class="notice">${escapeHtml(task.statusReason)}</p><br>` : ''}${renderDescription(entry)}${renderArtifactGroups(entry)}${renderLinks(entry)}${section('Rules', entry.rules ? `<pre>${escapeHtml(typeof entry.rules === 'string' ? entry.rules : JSON.stringify(entry.rules, null, 2))}</pre>` : '<p class="count">No rules for this task.</p>')}<details class="section" data-url-details="log-open" ${store.route.params.get('log-open') === '1' ? 'open' : ''}><summary>Log <span class="count">${logLines.length} entries</span></summary><pre class="log-block">${escapeHtml((allLog ? logLines : logLines.slice(-10)).join('\n') || 'No log entries yet.')}</pre>${logLines.length > 10 ? `<button class="text-button" data-filter="log" data-value="${allLog ? '' : 'all'}">${allLog ? 'Show last 10' : 'Show all'}</button>` : ''}</details>${recurring ? section('Job actions', `<div class="job-actions"><button class="secondary-button" data-action="run" data-id="${attribute(task.id)}" ${store.queued.has(`run:${task.id}`) || store.runningJobs.has(task.id) ? 'disabled' : ''}>${icon('play')}${store.runningJobs.has(task.id) ? 'Running…' : store.queued.has(`run:${task.id}`) ? 'Queued…' : 'Run now'}</button><button class="secondary-button" ${task.status === 'doing' ? 'data-popover="pause"' : 'data-action="resume"'} data-id="${attribute(task.id)}">${icon(task.status === 'doing' ? 'pause' : 'play')}${task.status === 'doing' ? 'Pause' : 'Resume'}</button><button class="secondary-button" data-popover="delete" ${store.runningJobs.has(task.id) ? 'disabled' : ''} data-id="${attribute(task.id)}">${icon('trash')}Delete job</button></div>`) : ''}`;
+  const rules = entry.rules ? `<pre>${escapeHtml(typeof entry.rules === 'string' ? entry.rules : JSON.stringify(entry.rules, null, 2))}</pre>` : '<p class="count">No rules for this task.</p>';
+  return `<h1>${escapeHtml(task.title)}</h1>${renderTaskMetadata(task, fields)}
+    ${task.statusReason ? `<p class="notice">${escapeHtml(task.statusReason)}</p><br>` : ''}
+    ${renderDescription(entry)}${renderArtifactGroups(entry)}${renderLinks(entry)}${section('Rules', rules)}
+    ${renderTaskLog(entry.log)}${recurring ? section('Job actions', renderJobActions(task)) : ''}`;
 }
 function documentHtml(rendered) {
   const template = document.createElement('template');
@@ -453,6 +520,7 @@ function renderDrawer() {
   const entering = !root.querySelector('.drawer');
   const oldContent = root.querySelector('.drawer-content');
   const contentHadFocus = document.activeElement === oldContent;
+  const focusWasOnBody = document.activeElement === document.body;
   const scroll = oldContent?.scrollTop || 0;
   const oldKey = root.dataset.key;
   const key = `${store.route.id}|${note || ''}|${documentPath || ''}|${runlog || ''}`;
@@ -472,7 +540,7 @@ function renderDrawer() {
   else body = renderTaskDetail(entry);
   root.innerHTML = `<aside class="drawer ${entering ? 'is-entering' : ''} ${params.get('full') === '1' ? 'full-page' : ''}" aria-label="${attribute(runlog ? 'Run log' : note ? 'Note detail' : 'Task detail')}"><header class="drawer-toolbar">${filePath && store.route.drawer ? `<button class="icon-button" data-action="document-back" aria-label="Back to task">${icon('left')}</button>` : ''}<span class="breadcrumb">${escapeHtml(title)}</span>${id && !filePath ? `<button class="icon-button" data-action="previous-task" aria-label="Previous task (k)">${icon('left')}</button><button class="icon-button" data-action="next-task" aria-label="Next task (j)">${icon('right')}</button>` : ''}<button class="text-button" data-filter="full" data-value="${params.get('full') === '1' ? '' : '1'}" aria-label="${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}">${icon('expand')}<span>${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}</span></button><button class="icon-button" data-action="close-drawer" aria-label="Close drawer (Escape)">${icon('close')}</button></header><div class="drawer-content" tabindex="-1">${body}</div></aside>`;
   root.querySelector('.drawer-content').scrollTop = oldKey === key ? scroll : 0;
-  if (oldKey !== key || contentHadFocus || document.activeElement === document.body) requestAnimationFrame(() => root.querySelector('.drawer-content')?.focus({ preventScroll: true }));
+  if (oldKey !== key || contentHadFocus || focusWasOnBody) requestAnimationFrame(() => root.querySelector('.drawer-content')?.focus({ preventScroll: true }));
 }
 async function ensureEntry(id, force = false) {
   if (!id || store.entryRequests.has(id) || !force && (store.entries.has(id) || store.entryErrors.has(id))) return;
@@ -491,7 +559,7 @@ async function ensureDocument(path, raw = false, force = false) {
       store.documents.set(path, { title: path.split('/').pop(), text: await response.text() });
     } else store.documents.set(path, await api.get(`/api/render?path=${encodeURIComponent(path)}`));
   } catch (error) { store.documents.set(path, { error: error.message }); }
-  renderDrawer();
+  if (['doc', 'note', 'runlog'].some(name => store.route.params.get(name) === path)) render();
 }
 async function loadInbox(force = false) {
   if (store.notesLoading || !force && store.notes) return;
@@ -530,7 +598,6 @@ async function loadState({ force = false } = {}) {
     const data = await api.get(`/api/state?from=${range.from}&to=${range.to}`);
     if (sequence !== store.requestSequence) return;
     store.data = { ...data, projects: data.projects || [], tasks: data.tasks || [], events: data.events || [], jobs: data.jobs || [], failed: data.failed || [] };
-    store.queued.forEach(operation => operation.optimistic?.());
   } catch (error) { if (sequence === store.requestSequence) store.error = error.message; }
   finally { if (sequence === store.requestSequence) { store.loading = false; store.refreshing = false; render(); } }
 }
@@ -543,17 +610,27 @@ function routeChanged() {
   store.selectedId = store.route.params.get('selected') || (store.route.drawer ? store.route.id : store.selectedId);
   closePopover(false);
   render();
+  if (drawerIsOpen(previousRoute) && !drawerIsOpen()) {
+    const locator = store.returnFocus;
+    requestAnimationFrame(() => restoreFocus(locator));
+    store.returnFocus = null;
+    store.documentReturnFocus = null;
+  } else if ((previousRoute?.params.get('doc') || previousRoute?.params.get('runlog')) && !store.route.params.get('doc') && !store.route.params.get('runlog')) {
+    const locator = store.documentReturnFocus;
+    requestAnimationFrame(() => restoreFocus(locator));
+    store.documentReturnFocus = null;
+  }
   loadState();
 }
-function showToast(message, undo, { error = false, expire } = {}) {
+function showToast(message, undo, { error = false, link } = {}) {
   const id = crypto.randomUUID();
   const toast = document.createElement('div');
   toast.className = `toast${error ? ' error' : ''}`;
   toast.setAttribute('role', error ? 'alert' : 'status');
-  toast.innerHTML = `<span>${escapeHtml(message)}</span>${undo ? '<button type="button">Undo</button>' : ''}`;
+  toast.innerHTML = `<span>${escapeHtml(message)}</span>${link ? `<a href="${attribute(link.href)}">${escapeHtml(link.label)}</a>` : ''}${undo ? '<button type="button">Undo</button>' : ''}`;
   element('toasts').append(toast);
   const dismiss = () => { clearTimeout(timer); toast.remove(); store.toasts.delete(id); };
-  const timer = setTimeout(() => { dismiss(); expire?.(); }, 8000);
+  const timer = setTimeout(dismiss, 8000);
   store.toasts.set(id, { dismiss, toast });
   if (undo) toast.querySelector('button').onclick = async () => {
     toast.querySelector('button').disabled = true;
@@ -583,7 +660,7 @@ function patchEntry(id, patch) {
 async function updateEntry(id, field, value, reason = '') {
   const entry = getEntry(id);
   if (!entry) return;
-  const key = `${id}:${field}`;
+  const key = `edit:${id}`;
   if (store.pending.has(key)) { showToast('This change is still saving. Try again in a moment.'); return; }
   store.pending.add(key);
   const previous = field === 'status' ? { status: entry.status, statusReason: entry.statusReason || null } : { [field]: entry[field] ?? null };
@@ -596,79 +673,84 @@ async function updateEntry(id, field, value, reason = '') {
   render();
   let succeeded = false;
   let writeResult;
-  const operation = api.post(url, payload).then(result => { succeeded = true; writeResult = result; return result; });
-  const notification = showToast(`${field === 'status' ? 'Status' : field === 'priority' ? 'Priority' : field === 'title' ? 'Title' : 'Date'} updated`, async () => {
-    await operation;
-    if (!succeeded) return;
-    const current = getEntry(id);
-    if (current?.[field] !== patch[field]) { showToast('This field changed again. Open it to choose the value you need.'); return; }
-    patchEntry(id, previous); render();
-    try { await api.post(url, reversePayload); showToast('Change undone.'); refreshAfterWrite(id); }
-    catch (error) { patchEntry(id, patch); render(); throw error; }
+  let revision;
+  let saveFinished;
+  const operation = api.post(url, payload).then(result => {
+    succeeded = true;
+    writeResult = result;
+    revision = recordWrite(id);
+    return result;
   });
-  try {
-    await operation;
-    if (writeResult.warnings?.length) showToast(writeResult.warnings.join(' '), null, { error: true });
-    await refreshAfterWrite(id);
-  } catch (error) {
-    notification.dismiss(); patchEntry(id, previous); render(); showToast(error.message, null, { error: true });
-  } finally { store.pending.delete(key); }
+  const notification = showToast(`${field === 'status' ? 'Status' : field === 'priority' ? 'Priority' : field === 'title' ? 'Title' : 'Date'} updated`, async () => {
+    await saveFinished;
+    if (!succeeded) return;
+    if (store.writeRevisions.get(id) !== revision || store.pending.has(key)) { showToast("Can't undo — it changed since"); return; }
+    store.pending.add(key);
+    patchEntry(id, previous); render();
+    try { await api.post(url, reversePayload); recordWrite(id); showToast('Change undone.'); await refreshAfterWrite(id); }
+    catch (error) { patchEntry(id, patch); render(); throw error; }
+    finally { store.pending.delete(key); }
+  });
+  saveFinished = (async () => {
+    try {
+      await operation;
+      if (writeResult.warnings?.length) showToast(writeResult.warnings.join(' '), null, { error: true });
+      await refreshAfterWrite(id);
+    } catch (error) {
+      notification.dismiss(); patchEntry(id, previous); render(); showToast(error.message, null, { error: true });
+    } finally { store.pending.delete(key); }
+  })();
+  await saveFinished;
 }
 async function refreshAfterWrite(id) {
   if (id) store.entryErrors.delete(id);
   const visible = store.route.drawer && store.route.id === id || store.route.view === 'project' && (store.route.projectContext || store.route.id) === id;
   await Promise.all([loadState({ force: true }), visible ? ensureEntry(id, true) : Promise.resolve()]);
 }
-function queueWrite(key, message, { optimistic, rollback, commit }) {
-  if (store.queued.has(key)) { showToast('This action is already queued.'); return; }
-  optimistic?.();
-  store.queued.set(key, { optimistic, rollback });
-  render();
-  showToast(message, () => { store.queued.delete(key); rollback?.(); render(); showToast('Action cancelled.'); }, { expire: async () => {
-    store.queued.delete(key);
-    try { await commit(); }
-    catch (error) { rollback?.(); render(); showToast(error.message, null, { error: true }); }
-  } });
+function recordWrite(id) {
+  const revision = (store.writeRevisions.get(id) || 0) + 1;
+  store.writeRevisions.set(id, revision);
+  return revision;
 }
-async function waitForRun(id, previousLog) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, attempt < 5 ? 700 : 3000));
-    const detail = await api.get(`/api/entry?id=${encodeURIComponent(id)}`);
-    if (detail.job?.lastLog && detail.job.lastLog !== previousLog) {
-      store.entries.set(id, detail);
-      return detail.job;
-    }
+function entryLink(id) {
+  return { href: routeUrl(`t/${id.split('/').map(encodeURIComponent).join('/')}`, { context: mainPath(), note: null, doc: null, runlog: null }), label: 'Open task' };
+}
+function runLogLink(job) {
+  return job.lastLog ? { href: routeUrl(`t/${job.id.split('/').map(encodeURIComponent).join('/')}`, { context: mainPath(), note: null, doc: null, runlog: runLogPath(job, job.lastLog) }), label: 'Open log' } : null;
+}
+async function waitForRun(id, previousRun) {
+  const deadline = Date.now() + 120000;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    await new Promise(resolve => setTimeout(resolve, Math.min(3000, remaining)));
+    if (Date.now() >= deadline) return null;
+    await loadState({ force: true });
+    const job = store.data.jobs.find(job => job.id === id);
+    if (job && job.lastRun !== previousRun) return job;
   }
   return null;
 }
-function queueRun(id) {
+async function runJob(id) {
   if (store.runningJobs.has(id)) { showToast('This job is already running.'); return; }
   const entry = getEntry(id);
   if (!entry) return;
-  const previousLog = store.data.jobs.find(job => job.id === id)?.lastLog || null;
-  queueWrite(`run:${id}`, 'Run queued. Starts in 8 seconds.', {
-    optimistic: () => patchEntry(id, { runQueued: true }),
-    rollback: () => patchEntry(id, { runQueued: false }),
-    commit: async () => {
-      store.runningJobs.add(id);
-      patchEntry(id, { runQueued: false });
-      render();
-      const running = showToast(`Running ${entry.title}…`);
-      try {
-        const result = await api.post('/api/run', { id });
-        const job = result.started ? await waitForRun(id, previousLog) : null;
-        if (result.warnings?.length) showToast(result.warnings.join(' '), null, { error: true });
-        else if (result.started && !job) showToast('Run started. Its log is still pending. Use Refresh in Jobs to check it.');
-        else if (job?.lastResult === 'error' || result.entry?.['last-result'] === 'error') showToast('The run failed. Open its log for details.', null, { error: true });
-        else showToast('Run finished. Open its log for the result.');
-        await refreshAfterWrite(id);
-      } finally {
-        running.dismiss();
-        store.runningJobs.delete(id);
-        render();
-      }
-    },
-  });
+  const previousRun = store.data.jobs.find(job => job.id === id)?.lastRun ?? null;
+  store.runningJobs.set(id, 'Starting…');
+  render();
+  try {
+    const result = await api.post('/api/run', { id });
+    recordWrite(id);
+    store.runningJobs.set(id, 'Started');
+    render();
+    showToast(`Started ${entry.title}.`);
+    if (result.warnings?.length) showToast(result.warnings.join(' '), null, { error: true });
+    const job = await waitForRun(id, previousRun);
+    if (!job) showToast('The run log is still pending. Use Refresh in Jobs to check it.');
+    else showToast(job.lastResult === 'error' ? 'Run error.' : 'Run ok.', null, { error: job.lastResult === 'error', link: runLogLink(job) });
+    await refreshAfterWrite(id);
+  } catch (error) { showToast(error.message, null, { error: true }); }
+  finally { store.runningJobs.delete(id); render(); }
 }
 async function deleteJob(id) {
   const entry = getEntry(id);
@@ -685,28 +767,29 @@ async function deleteJob(id) {
   closePopover(false);
   if (store.route.drawer && store.route.id === id) closeDrawer();
   render();
-  const operation = api.post('/api/delete', { id });
+  let revision;
+  const operation = api.post('/api/delete', { id }).then(result => { revision = recordWrite(id); return result; });
   const notification = showToast(`Moved “${entry.title}” to trash`, async () => {
     const result = await operation;
+    if (store.writeRevisions.get(id) !== revision) { showToast("Can't undo — it changed since"); return; }
     restoreSnapshot('paused'); render();
-    try { await api.post('/api/restore', { trashId: result.trashId }); showToast('Job restored in paused state.'); await refreshAfterWrite(id); }
+    try { await api.post('/api/restore', { trashId: result.trashId }); recordWrite(id); showToast('Job restored in paused state.'); await refreshAfterWrite(id); }
     catch (error) { ['tasks', 'jobs', 'failed'].forEach(collection => store.data[collection] = store.data[collection].filter(task => task.id !== id)); recalculateCounts(); render(); throw error; }
   });
   try { await operation; await loadState({ force: true }); }
   catch (error) { notification.dismiss(); restoreSnapshot(); render(); showToast(error.message, null, { error: true }); }
 }
-function queueCreateTask({ project, slug, title, fromNote }) {
-  const id = `${project}/pending-${crypto.randomUUID()}`;
-  const projectEntry = getEntry(project);
-  const task = { id, project, projectTitle: projectEntry.title, area: projectEntry.area, title, kind: 'normal', status: 'todo', priority: 'med', priorityLabel: 'med', started: today(), due: null, lastActivity: null, statusReason: null, hasReadme: true, artifactCount: 0, pending: true };
-  const remove = () => { store.data.tasks = store.data.tasks.filter(entry => entry.id !== id); recalculateCounts(); };
-  queueWrite(`create:${id}`, 'Task queued. Creates in 8 seconds.', {
-    optimistic: () => { if (!store.data.tasks.some(entry => entry.id === id)) store.data.tasks.push(task); recalculateCounts(); },
-    rollback: remove,
-    commit: async () => {
-      const payload = { project, slug, title, fromNote };
-      const result = await api.post('/api/task', payload); remove(); await loadState({ force: true }); showToast('Task created. The original note stays in your inbox.'); if (result.entry?.id) openEntry(result.entry.id); },
-  });
+async function createTask({ project, slug, title, fromNote }) {
+  const key = `create:${project}:${slug}`;
+  if (store.pending.has(key)) { showToast('This task is still saving.'); return; }
+  store.pending.add(key);
+  try {
+    const result = await api.post('/api/task', { project, slug, title, fromNote });
+    if (result.entry?.id) recordWrite(result.entry.id);
+    await loadState({ force: true });
+    showToast('Task created. The original note stays in your inbox.', null, { link: result.entry?.id ? entryLink(result.entry.id) : null });
+  } catch (error) { showToast(error.message, null, { error: true }); }
+  finally { store.pending.delete(key); }
 }
 function openPopover(type, anchor, id = '', extra = {}) {
   closePopover(false);
@@ -801,13 +884,18 @@ async function loadTrash() {
     positionPopover();
   } catch (error) { if (element('trash-items')) element('trash-items').textContent = error.message; }
 }
-function restoreJob(trashId) {
+async function restoreJob(trashId) {
+  const key = `restore:${trashId}`;
+  if (store.pending.has(key)) { showToast('This job is still restoring.'); return; }
+  store.pending.add(key);
   closePopover();
-  queueWrite(`restore:${trashId}`, 'Restore queued. Restores in 8 seconds.', {
-    optimistic: () => { const count = store.trash?.length || 0; store.data.trash = Math.max(0, count - 1); },
-    rollback: () => store.data.trash = store.trash?.length || 0,
-    commit: async () => { await api.post('/api/restore', { trashId }); await loadState({ force: true }); showToast('Job restored in paused state.'); },
-  });
+  try {
+    const result = await api.post('/api/restore', { trashId });
+    if (result.entry?.id) recordWrite(result.entry.id);
+    await loadState({ force: true });
+    showToast('Job restored in paused state.', null, { link: result.entry?.id ? entryLink(result.entry.id) : null });
+  } catch (error) { showToast(error.message, null, { error: true }); }
+  finally { store.pending.delete(key); }
 }
 function currentEntryId() {
   if (store.route.drawer) return store.route.id;
@@ -831,7 +919,7 @@ function paletteItems() {
       { label: `Rename · ${entry.title}`, icon: 'file', run: () => openPopover('rename', anchor(), id), group: 'Selected item' },
     );
     if (entry.kind === 'recurring' || entry.fields?.kind === 'recurring') items.push(
-      { label: `Run now · ${entry.title}`, icon: 'play', run: () => queueRun(id), group: 'Selected item' },
+      { label: `Run now · ${entry.title}`, icon: 'play', run: () => runJob(id), group: 'Selected item' },
       { label: `${entry.status === 'doing' ? 'Pause' : 'Resume'} · ${entry.title}`, icon: 'pause', run: () => entry.status === 'doing' ? openPopover('pause', anchor(), id) : updateEntry(id, 'status', 'doing'), group: 'Selected item' },
       { label: `Delete job · ${entry.title}`, icon: 'trash', run: () => openPopover('delete', anchor(), id), group: 'Selected item' },
     );
@@ -929,8 +1017,8 @@ function trapFocus(event, container) {
     event.preventDefault(); menuControls[position]?.focus();
   }
 }
-function openNote(path) {
-  store.returnFocus = document.activeElement;
+function openNote(path, opener = document.activeElement) {
+  rememberDrawerOpener(opener, `[data-note="${CSS.escape(path)}"]`);
   navigate('inbox', { note: path, doc: null, runlog: null, context: null });
 }
 async function copyText(text) {
@@ -942,17 +1030,18 @@ const clickActions = {
   'close-drawer': closeDrawer, 'next-task': () => moveSelection(1), 'previous-task': () => moveSelection(-1), theme: toggleTheme,
   reload: () => loadState({ force: true }), 'reload-inbox': () => loadInbox(true),
   'clear-filters': () => navigate(store.route.path, { area: null, status: null, priority: null, q: null, project: null, folder: null }),
-  'document-back': () => navigate(store.route.path, { doc: null, runlog: null }),
-  run: control => queueRun(control.dataset.id), resume: control => updateEntry(control.dataset.id, 'status', 'doing'),
+  'document-back': closeDocument,
+  run: control => runJob(control.dataset.id), resume: control => updateEntry(control.dataset.id, 'status', 'doing'),
 };
 document.addEventListener('click', event => {
   const control = event.target.closest('button, a, [data-row], [data-note-row]');
   if (event.target.matches('[data-palette-backdrop]')) { closePalette(); return; }
   if (!control) return;
+  if (control.matches('.skip-link')) { event.preventDefault(); element('main').focus(); return; }
   if (control.dataset.action) { clickActions[control.dataset.action]?.(control); return; }
   if (control.dataset.view) { navigateView(control.dataset.view); return; }
   if (control.dataset.filter) { closePopover(false); setFilter(control.dataset.filter, control.dataset.value); return; }
-  if (control.dataset.open) { openEntry(control.dataset.open); return; }
+  if (control.dataset.open) { openEntry(control.dataset.open, control); return; }
   if (control.dataset.popover) { openPopover(control.dataset.popover, control, control.dataset.id); return; }
   if ('statusValue' in control.dataset) { selectStatus(control.dataset.statusValue); return; }
   if ('priorityValue' in control.dataset) { const id = store.popover.id; closePopover(); updateEntry(id, 'priority', control.dataset.priorityValue); return; }
@@ -966,9 +1055,9 @@ document.addEventListener('click', event => {
   if ('priorityFilter' in control.dataset) { closePopover(false); setFilter('priority', control.dataset.priorityFilter); return; }
   if (control.dataset.sort) { const key = control.dataset.sort; navigate(store.route.path, { sort: key, direction: store.route.params.get('sort') === key && store.route.params.get('direction') !== 'desc' ? 'desc' : 'asc' }); return; }
   if (control.dataset.day) { navigate('timeline', { day: control.dataset.day, tab: 'activity', context: null, doc: null, runlog: null, note: null }); return; }
-  if (control.dataset.note) { openNote(control.dataset.note); return; }
-  if (control.dataset.document) { navigate(store.route.path, { doc: control.dataset.document, runlog: null }); return; }
-  if (control.dataset.runlog) { store.returnFocus = document.activeElement; navigate(`t/${control.dataset.id.split('/').map(encodeURIComponent).join('/')}`, { context: mainPath(), runlog: control.dataset.runlog, doc: null }); return; }
+  if (control.dataset.note) { openNote(control.dataset.note, control); return; }
+  if (control.dataset.document) { openDocument(control.dataset.document, false, '', control); return; }
+  if (control.dataset.runlog) { openDocument(control.dataset.runlog, true, control.dataset.id, control); return; }
   if (control.dataset.convert) { openPopover('convert', control, '', { notePath: control.dataset.convert }); return; }
   if (control.dataset.confirmDelete) { deleteJob(control.dataset.confirmDelete); return; }
   if (control.dataset.restore) { restoreJob(control.dataset.restore); return; }
@@ -1009,7 +1098,7 @@ document.addEventListener('submit', event => {
   }
   if (form.id === 'due-form') applyDue(values.get('date'));
   if (form.id === 'rename-form') { const id = store.popover.id; const title = String(values.get('title')).trim(); if (!title) return; closePopover(); updateEntry(id, 'title', title); }
-  if (form.id === 'convert-form') { const fromNote = store.popover.notePath; closePopover(); queueCreateTask({ project: values.get('project'), slug: values.get('slug'), title: String(values.get('title')).trim(), fromNote }); }
+  if (form.id === 'convert-form') { const fromNote = store.popover.notePath; closePopover(); createTask({ project: values.get('project'), slug: values.get('slug'), title: String(values.get('title')).trim(), fromNote }); }
 });
 document.addEventListener('focusin', event => {
   const row = event.target.closest('[data-row]');
@@ -1035,7 +1124,7 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     if (element('palette-root').children.length) closePalette();
     else if (store.popover) closePopover();
-    else if (store.route.params.get('doc') || store.route.params.get('runlog')) navigate(store.route.path, { doc: null, runlog: null });
+    else if (store.route.params.get('doc') || store.route.params.get('runlog')) closeDocument();
     else if (store.route.drawer || store.route.params.get('note')) closeDrawer();
     else if (document.activeElement.matches('input')) document.activeElement.blur();
     return;
