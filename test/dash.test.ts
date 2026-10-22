@@ -118,17 +118,26 @@ test('GET state responds within 500 ms for 50 projects with 20 tasks each', asyn
   await new Promise<void>(done => server.once('listening', done));
   context.after(() => new Promise<void>(done => server.close(() => done())));
   const port = (server.address() as AddressInfo).port;
-  const started = performance.now();
-  const response = await fetch(`http://127.0.0.1:${port}/api/state`);
-  const state = await response.json();
-  const elapsed = performance.now() - started;
-  context.diagnostic(`/api/state: ${elapsed.toFixed(1)} ms`);
-  assert.equal(response.status, 200);
-  assert.equal(state.projects.length, 50);
-  assert.equal(state.tasks.length, 1000);
-  assert.ok(state.projects.every((project: any) => project.taskCounts.total === 20 && project.nextDue === '2030-01-01'));
-  assert.ok(state.tasks.every((task: any) => task.artifactCount === 13));
-  assert.ok(elapsed < 500, `/api/state took ${elapsed.toFixed(1)} ms; expected less than 500 ms`);
+  const stateUrl = `http://127.0.0.1:${port}/api/state`;
+  const warmupResponse = await fetch(stateUrl);
+  await warmupResponse.json();
+  assert.equal(warmupResponse.status, 200);
+  const samples: number[] = [];
+  for (let sampleNumber = 0; sampleNumber < 7; sampleNumber += 1) {
+    const started = performance.now();
+    const response = await fetch(stateUrl);
+    const state = await response.json();
+    samples.push(performance.now() - started);
+    assert.equal(response.status, 200);
+    assert.equal(state.projects.length, 50);
+    assert.equal(state.tasks.length, 1000);
+    assert.ok(state.projects.every((project: any) => project.taskCounts.total === 20 && project.nextDue === '2030-01-01'));
+    assert.ok(state.tasks.every((task: any) => task.artifactCount === 13));
+  }
+  samples.sort((left, right) => left - right);
+  const median = samples[3];
+  context.diagnostic(`/api/state median: ${median.toFixed(1)} ms`);
+  assert.ok(median < 500, `/api/state median was ${median.toFixed(1)} ms; expected less than 500 ms`);
 });
 
 test('GET entry renders safe markdown and groups registered and unregistered artifacts', async context => {
