@@ -117,6 +117,17 @@ test('link labels respect code spans, escaped brackets, and balanced brackets', 
   assert.equal(renderMarkdown('[a \\] b](safe)'), '<p><a href="safe">a ] b</a></p>');
 });
 
+for (const { source, expected } of [
+  { source: '[one](safe "`") [two](safe) `tail`', expected: '<p><a href="safe" title="`">one</a> <a href="safe">two</a> <code>tail</code></p>' },
+  { source: '[one](safe`path) [two](safe) `tail`', expected: '<p><a href="safe%60path">one</a> <a href="safe">two</a> <code>tail</code></p>' },
+  { source: '![one](safe "`") [two](safe) `tail`', expected: '<p><img src="safe" alt="one" title="`"> <a href="safe">two</a> <code>tail</code></p>' },
+  { source: '![one](safe`path) [two](safe) `tail`', expected: '<p><img src="safe%60path" alt="one"> <a href="safe">two</a> <code>tail</code></p>' },
+]) {
+  test('backticks in destinations and titles preserve following formatting: ' + source, () => {
+    assert.equal(renderMarkdown(source), expected);
+  });
+}
+
 const performanceCases = [
   { name: 'heading with 3,200 spaces', source: '# a' + ' '.repeat(3200) + 'x', expected: '<h1 id="a-x">a' + ' '.repeat(3200) + 'x</h1>' },
   { name: 'email with 40,000 dots', source: '<a@' + '.'.repeat(40000) + ' ', expected: '<p>&lt;a@' + '.'.repeat(40000) + ' </p>' },

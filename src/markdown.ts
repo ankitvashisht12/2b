@@ -74,7 +74,11 @@ type InlineToken = {
   closing?: string[];
 };
 
-function protectedTokens(source: string): Map<number, InlineToken> {
+function scanInlineSyntax(source: string, allowLinks: boolean): {
+  protectedSpans: Map<number, InlineToken>;
+  closingBrackets: Map<number, number>;
+  destinations: Map<number, Destination>;
+} {
   const tickRuns = new Map<number, { starts: number[]; cursor: number }>();
   for (let position = 0; position < source.length;) {
     if (source[position] !== '`') { position++; continue; }
@@ -86,6 +90,9 @@ function protectedTokens(source: string): Map<number, InlineToken> {
     tickRuns.set(length, runs);
   }
   const tokens = new Map<number, InlineToken>();
+  const brackets: number[] = [];
+  const closingBrackets = new Map<number, number>();
+  const destinations = new Map<number, Destination>();
   let position = 0;
   while (position < source.length) {
     const start = position;
@@ -111,22 +118,27 @@ function protectedTokens(source: string): Map<number, InlineToken> {
       tokens.set(start, { start, end: position });
       continue;
     }
+    if (character === '[') brackets.push(position);
+    else if (character === ']' && brackets.length) {
+      const labelStart = brackets.pop()!;
+      closingBrackets.set(labelStart, position);
+      const image = source[labelStart - 1] === '!' && tokens.get(labelStart - 2)?.end !== labelStart;
+      if ((allowLinks || image) && source[position + 1] === '(') {
+        const destination = destinationAt(source, position + 2);
+        if (destination) {
+          destinations.set(labelStart, destination);
+          position = destination.end;
+          continue;
+        }
+      }
+    }
     position++;
   }
-  return tokens;
+  return { protectedSpans: tokens, closingBrackets, destinations };
 }
 
 function inlineTokens(source: string, baseUrl: string, depth: number, allowLinks: boolean): InlineToken[] {
-  const protectedSpans = protectedTokens(source);
-  const brackets: number[] = [];
-  const closingBrackets = new Map<number, number>();
-  for (let position = 0; position < source.length;) {
-    const protectedSpan = protectedSpans.get(position);
-    if (protectedSpan) { position = protectedSpan.end; continue; }
-    if (source[position] === '[') brackets.push(position);
-    else if (source[position] === ']' && brackets.length) closingBrackets.set(brackets.pop()!, position);
-    position++;
-  }
+  const { protectedSpans, closingBrackets, destinations } = scanInlineSyntax(source, allowLinks);
   const tokens: InlineToken[] = [];
   let position = 0;
   while (position < source.length) {
@@ -142,7 +154,7 @@ function inlineTokens(source: string, baseUrl: string, depth: number, allowLinks
     const labelStart = position + (image ? 1 : 0);
     const labelEnd = closingBrackets.get(labelStart);
     if ((image || allowLinks) && labelEnd !== undefined && source[labelEnd + 1] === '(') {
-      const destination = destinationAt(source, labelEnd + 2);
+      const destination = destinations.get(labelStart);
       if (destination) {
         const label = source.slice(labelStart + 1, labelEnd);
         const safe = safeUrl(destination.url, baseUrl);
