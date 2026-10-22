@@ -7,7 +7,7 @@ import { labelFor, syncSchedules } from './schedule.ts';
 
 type ScheduleOptions = { agentsDir?: string; load?: boolean };
 type TrashItem = { trashId: string; project: string; task: string; deletedAt: string };
-const METADATA = '.trash.json';
+const METADATA = 'meta.json';
 
 function trashDirectory(root: string, trashId: string): string {
   if (!/^\d{4}-\d{2}-\d{2}-\d{6}--[a-z0-9.-]+--[a-z0-9.-]+$/.test(trashId)) {
@@ -44,8 +44,8 @@ export function trashTask(root: string, task: Entry, options: ScheduleOptions = 
   if (fs.existsSync(destination)) throw new UserError(`trash item "${trashId}" already exists; retry in one second`);
   setStatus(task, 'dropped', 'deleted');
   syncTask(root, task, options);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.renameSync(source, destination);
+  fs.mkdirSync(destination, { recursive: true });
+  fs.renameSync(source, path.join(destination, 'task'));
   fs.writeFileSync(path.join(destination, METADATA), JSON.stringify({ project: task.project, task: folder, deletedAt: localDateTime() }));
   appendLog(path.join(root, 'projects', task.project), `deleted ${task.id}`, `moved to .trash/${trashId}`);
   return { trashId, path: destination };
@@ -58,12 +58,14 @@ export function restoreTask(root: string, trashId: string, options: ScheduleOpti
   if (!fs.existsSync(path.join(projectDir, 'readme.md'))) throw new UserError(`project "${item.project}" does not exist`);
   const destination = path.join(projectDir, 'tasks', item.task);
   if (fs.existsSync(destination)) throw new UserError(`task "${item.project}/${item.task}" already exists`);
-  const task = readEntry('task', item.project, source);
+  const taskDirectory = path.join(source, 'task');
+  const task = readEntry('task', item.project, taskDirectory);
   if (task.fields.kind !== 'recurring') throw new UserError('only recurring tasks can be restored');
   setStatus(task, 'paused', 'restored from trash');
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.renameSync(source, destination);
-  fs.unlinkSync(path.join(destination, METADATA));
+  fs.renameSync(taskDirectory, destination);
+  fs.unlinkSync(path.join(source, METADATA));
+  fs.rmdirSync(source);
   const restored = readEntry('task', item.project, destination);
   syncTask(root, restored, options);
   appendLog(projectDir, `restored ${restored.id}`);
