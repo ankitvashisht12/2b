@@ -1,3 +1,9 @@
+import { Buffer } from 'node:buffer';
+
+// ponytail: 512 KB documents and 64 KB inline text limits bound parsing work on untrusted input.
+const maximumSourceBytes = 512 * 1024;
+const maximumInlineBytes = 64 * 1024;
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 }
@@ -8,26 +14,57 @@ function unescapeMarkdown(value: string): string {
 
 type Destination = { url: string; title?: string; end: number };
 
-function destinationAt(source: string, start: number): Destination | null {
+type DestinationClosers = {
+  parentheses: Map<number, number>;
+  angles: Map<number, number>;
+  quotes: Map<number, number>;
+};
+
+function indexDestinationClosers(source: string): DestinationClosers {
+  const closers: DestinationClosers = { parentheses: new Map(), angles: new Map(), quotes: new Map() };
+  const parentheses: number[] = [];
+  const angles: number[] = [];
+  const previousQuotes = new Map<string, number>();
+  let escaped = false;
+  for (let position = 0; position < source.length; position++) {
+    const character = source[position];
+    if (character === '<') angles.push(position);
+    else if (character === '>') {
+      while (angles.length) closers.angles.set(angles.pop()!, position);
+    }
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (character === '(') parentheses.push(position);
+    else if (character === ')' && parentheses.length) closers.parentheses.set(parentheses.pop()!, position);
+    else if (character === '"' || character === "'") {
+      const previous = previousQuotes.get(character);
+      if (previous !== undefined) closers.quotes.set(previous, position);
+      previousQuotes.set(character, position);
+    }
+  }
+  return closers;
+}
+
+function destinationAt(source: string, start: number, closers: DestinationClosers): Destination | null {
   let position = start;
   let url = '';
   if (source[position] === '<') {
-    const closing = source.indexOf('>', position + 1);
-    if (closing < 0) return null;
+    const closing = closers.angles.get(position);
+    if (closing === undefined) return null;
     url = source.slice(position + 1, closing);
     position = closing + 1;
   } else {
-    let depth = 0;
     const beginning = position;
     while (position < source.length) {
       const character = source[position];
       if (character === '\\' && position + 1 < source.length) { position += 2; continue; }
-      if (character === '(') depth++;
-      if (character === ')') {
-        if (depth === 0) break;
-        depth--;
+      if (character === '(') {
+        const closing = closers.parentheses.get(position);
+        if (closing === undefined) return null;
+        position = closing + 1;
+        continue;
       }
-      if (/\s/.test(character) && depth === 0) break;
+      if (character === ')' || /\s/.test(character)) break;
       position++;
     }
     url = source.slice(beginning, position);
@@ -36,13 +73,10 @@ function destinationAt(source: string, start: number): Destination | null {
   while (/\s/.test(source[position] ?? '')) position++;
   let title: string | undefined;
   if (hadSpace && (source[position] === '"' || source[position] === "'")) {
-    const quote = source[position++];
-    const beginning = position;
-    while (position < source.length && source[position] !== quote) {
-      position += source[position] === '\\' ? 2 : 1;
-    }
-    if (position >= source.length) return null;
-    title = unescapeMarkdown(source.slice(beginning, position++));
+    const closing = closers.quotes.get(position);
+    if (closing === undefined) return null;
+    title = unescapeMarkdown(source.slice(position + 1, closing));
+    position = closing + 1;
     while (/\s/.test(source[position] ?? '')) position++;
   }
   return source[position] === ')' ? { url: unescapeMarkdown(url), title, end: position + 1 } : null;
@@ -79,6 +113,8 @@ function scanInlineSyntax(source: string, allowLinks: boolean): {
   closingBrackets: Map<number, number>;
   destinations: Map<number, Destination>;
 } {
+  // Failed destinations can overlap, so nested ranges and titles must not be scanned again.
+  const destinationClosers = indexDestinationClosers(source);
   const tickRuns = new Map<number, { starts: number[]; cursor: number }>();
   for (let position = 0; position < source.length;) {
     if (source[position] !== '`') { position++; continue; }
@@ -124,7 +160,7 @@ function scanInlineSyntax(source: string, allowLinks: boolean): {
       closingBrackets.set(labelStart, position);
       const image = source[labelStart - 1] === '!' && tokens.get(labelStart - 2)?.end !== labelStart;
       if ((allowLinks || image) && source[position + 1] === '(') {
-        const destination = destinationAt(source, position + 2);
+        const destination = destinationAt(source, position + 2, destinationClosers);
         if (destination) {
           destinations.set(labelStart, destination);
           position = destination.end;
@@ -248,7 +284,7 @@ function formatTokens(tokens: InlineToken[], source: string): string {
 }
 
 function inline(source: string, baseUrl: string, depth = 0, allowLinks = true): string {
-  if (depth > 40) return escapeHtml(source);
+  if (depth > 40 || Buffer.byteLength(source, 'utf8') > maximumInlineBytes) return escapeHtml(source);
   return formatTokens(inlineTokens(source, baseUrl, depth, allowLinks), source);
 }
 
@@ -388,7 +424,8 @@ function blocks(lines: string[], baseUrl: string, slugs: Set<string>, depth = 0)
     const paragraph = [line];
     position++;
     while (position < lines.length && !startsBlock(position)) paragraph.push(lines[position++]);
-    output.push(`<p>${inline(paragraph.join('\n').replace(/ {2,}\n/g, '\n'), baseUrl)}</p>`);
+    const text = paragraph.join('\n');
+    output.push(`<p>${Buffer.byteLength(text, 'utf8') > maximumInlineBytes ? escapeHtml(text) : inline(text.replace(/ {2,}\n/g, '\n'), baseUrl)}</p>`);
   }
   return output.join('\n');
 }
@@ -397,6 +434,7 @@ export function renderMarkdown(source: string, options: { baseUrl?: string } = {
   try {
     const { baseUrl = '' } = options;
     if (typeof source !== 'string' || typeof baseUrl !== 'string') throw new TypeError('Expected text');
+    if (Buffer.byteLength(source, 'utf8') > maximumSourceBytes) return `<pre>${escapeHtml(source)}</pre>`;
     const lines = source.replace(/\r\n?/g, '\n').replace(/^\uFEFF/, '').split('\n');
     if (lines[0] === '---') {
       const closing = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)$/.test(line));

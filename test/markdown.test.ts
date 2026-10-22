@@ -128,6 +128,38 @@ for (const { source, expected } of [
   });
 }
 
+test('failed destinations preserve valid inner links and escaped parentheses', () => {
+  assert.equal(renderMarkdown('[outer [inner](safe)'), '<p>[outer <a href="safe">inner</a></p>');
+  assert.equal(renderMarkdown('[outer](broken [inner](safe)'), '<p>[outer](broken <a href="safe">inner</a></p>');
+  assert.equal(renderMarkdown('[outer](<broken [inner](safe)'), '<p>[outer](&lt;broken <a href="safe">inner</a></p>');
+  assert.equal(renderMarkdown('[outer](broken "unfinished [inner](safe)'), '<p>[outer](broken &quot;unfinished <a href="safe">inner</a></p>');
+  assert.equal(renderMarkdown('[x](path\\(literal\\))'), '<p><a href="path(literal)">x</a></p>');
+  assert.equal(renderMarkdown('[x](path_(nested) "a ) and \\"quoted\\"")'), '<p><a href="path_(nested)" title="a ) and &quot;quoted&quot;">x</a></p>');
+});
+
+test('paragraphs above 64 KB are escaped while nearby paragraphs retain formatting', () => {
+  const prefix = '**bold** [link](safe) <script>&"\'\n';
+  const padding = 'x'.repeat(64 * 1024 + 1 - prefix.length);
+  assert.equal(renderMarkdown(prefix + padding + '\n\n**short**'), '<p>**bold** [link](safe) &lt;script&gt;&amp;&quot;&#39;\n' + padding + '</p>\n<p><strong>short</strong></p>');
+});
+
+test('size limits include their boundary and count UTF-8 bytes', () => {
+  const inlinePrefix = '**bold** ';
+  const inlinePadding = 'x'.repeat(64 * 1024 - inlinePrefix.length);
+  assert.equal(renderMarkdown(inlinePrefix + inlinePadding), '<p><strong>bold</strong> ' + inlinePadding + '</p>');
+  const unicodeParagraph = '**bold** ' + 'é'.repeat(32 * 1024);
+  assert.equal(renderMarkdown(unicodeParagraph), '<p>' + unicodeParagraph + '</p>');
+
+  const documentPrefix = '# Allowed\n\n';
+  const documentPadding = 'x'.repeat(512 * 1024 - documentPrefix.length);
+  assert.equal(renderMarkdown(documentPrefix + documentPadding), '<h1 id="allowed">Allowed</h1>\n<p>' + documentPadding + '</p>');
+  assert.equal(renderMarkdown(documentPrefix + documentPadding + 'x'), '<pre>' + documentPrefix + documentPadding + 'x</pre>');
+  const unicodeDocument = '# Heading\n\n' + 'é'.repeat(256 * 1024);
+  assert.equal(renderMarkdown(unicodeDocument), '<pre>' + unicodeDocument + '</pre>');
+});
+
+const largeDocumentPrefix = '# Heading\n\n<script>&"\'</script>\n';
+const largeDocumentPadding = 'x'.repeat(600 * 1024 - largeDocumentPrefix.length);
 const performanceCases = [
   { name: 'heading with 3,200 spaces', source: '# a' + ' '.repeat(3200) + 'x', expected: '<h1 id="a-x">a' + ' '.repeat(3200) + 'x</h1>' },
   { name: 'email with 40,000 dots', source: '<a@' + '.'.repeat(40000) + ' ', expected: '<p>&lt;a@' + '.'.repeat(40000) + ' </p>' },
@@ -137,6 +169,9 @@ const performanceCases = [
   { name: '10,000-line list', source: Array.from({ length: 10000 }, (_, itemNumber) => '- item ' + itemNumber).join('\n'), expected: '<ul>\n' + Array.from({ length: 10000 }, (_, itemNumber) => '<li>item ' + itemNumber + '</li>').join('\n') + '\n</ul>' },
   { name: '80,000 unmatched inline backticks', source: 'text ' + '`'.repeat(80000), expected: '<p>text ' + '`'.repeat(80000) + '</p>' },
   { name: '50,000 inline stars', source: 'text ' + '*'.repeat(50000), expected: '<p>text ' + '*'.repeat(50000) + '</p>' },
+  { name: '8,000 failed nested destinations', source: '[outer ' + '[x]('.repeat(8000) + '](safe)', expected: '<p><a href="safe">outer ' + '[x]('.repeat(8000) + '</a></p>' },
+  { name: '50,000 failed nested destinations', source: '[outer ' + '[x]('.repeat(50000) + '](safe)', expected: '<p>[outer ' + '[x]('.repeat(50000) + '](safe)</p>' },
+  { name: '600 KB escaped document', source: largeDocumentPrefix + largeDocumentPadding, expected: '<pre># Heading\n\n&lt;script&gt;&amp;&quot;&#39;&lt;/script&gt;\n' + largeDocumentPadding + '</pre>' },
 ];
 for (const { name, source, expected } of performanceCases) {
   test('renders ' + name + ' in less than 200 ms', context => {
