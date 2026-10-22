@@ -3,19 +3,20 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  NODE_COMMAND, UserError, CLOSED_STATUSES, PRIORITY_LABELS, addDays, appendLog, assertDay,
+  NODE_COMMAND, UserError, CLOSED_STATUSES, PRIORITY_LABELS, addDays, appendLog, assertDay, assertSlug,
   createTask, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
   setField, setStatus, type Entry, type Artifact,
 } from './store.ts';
 import { isoWeek, readAllEvents } from './week.ts';
 import { formatRules, rulesFor } from './rules.ts';
-import { jobsOverview, runTask, syncSchedules } from './schedule.ts';
+import { jobsOverview, syncSchedules } from './schedule.ts';
 import { listTrash, restoreTask, trashTask } from './trash.ts';
 import { renderMarkdown } from './markdown.ts';
 import { parse } from './frontmatter.ts';
 
 export const DEFAULT_PORT = 4422;
 type ScheduleOptions = { agentsDir?: string; load?: boolean };
+type DashboardOptions = ScheduleOptions & { bodyTimeoutMs?: number; startRun?: (taskId: string) => void };
 const DASH_DIR = path.join(import.meta.dirname, '..', 'dash');
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -36,8 +37,64 @@ class ApiError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
+function assertInsideStore(root: string, targetPath: string): void {
+  const absoluteRoot = path.resolve(root);
+  let existingPath = path.resolve(targetPath);
+  if (existingPath !== absoluteRoot && !existingPath.startsWith(absoluteRoot + path.sep)) throw new ApiError(404, 'not found');
+  const realRoot = fs.realpathSync(root);
+  for (;;) {
+    try {
+      const realTarget = fs.realpathSync(existingPath);
+      if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) throw new ApiError(404, 'not found');
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new ApiError(404, 'not found');
+      try {
+        if (fs.lstatSync(existingPath).isSymbolicLink()) throw new ApiError(404, 'not found');
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw new ApiError(404, 'not found');
+      }
+      const parent = path.dirname(existingPath);
+      if (parent === existingPath) throw new ApiError(404, 'not found');
+      existingPath = parent;
+    }
+  }
+}
+
+function assertEntryPaths(root: string, dir: string): void {
+  assertInsideStore(root, dir);
+  for (const file of ['readme.md', 'log.md', 'rules.md', 'runs']) assertInsideStore(root, path.join(dir, file));
+}
+
+function assertStoreEntries(root: string): void {
+  assertInsideStore(root, path.join(root, 'rules.md'));
+  const directories = (dir: string) => {
+    assertInsideStore(root, dir);
+    return fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true })
+      .filter(item => item.isDirectory() || item.isSymbolicLink())
+      .map(item => path.join(dir, item.name)) : [];
+  };
+  for (const projectDir of directories(path.join(root, 'projects'))) {
+    assertEntryPaths(root, projectDir);
+    for (const taskDir of directories(path.join(projectDir, 'tasks'))) assertEntryPaths(root, taskDir);
+  }
+}
+
+function assertTrashPaths(root: string): void {
+  const trashDir = path.join(root, '.trash');
+  assertInsideStore(root, trashDir);
+  if (!fs.existsSync(trashDir)) return;
+  for (const item of fs.readdirSync(trashDir, { withFileTypes: true })) {
+    if (!item.isDirectory() && !item.isSymbolicLink()) continue;
+    const dir = path.join(trashDir, item.name);
+    assertInsideStore(root, path.join(dir, 'meta.json'));
+    assertEntryPaths(root, path.join(dir, 'task'));
+  }
+}
+
 function storeFile(root: string, relativePath: string): string {
   const absolute = path.resolve(root, relativePath);
+  assertInsideStore(root, absolute);
   if (!absolute.startsWith(path.resolve(root) + path.sep) || !fs.existsSync(absolute)
     || !fs.statSync(absolute).isFile()
     || !fs.realpathSync(absolute).startsWith(fs.realpathSync(root) + path.sep)) {
@@ -48,8 +105,12 @@ function storeFile(root: string, relativePath: string): string {
 
 function findEntry(root: string, id: string): Entry {
   if (!id.trim()) throw new ApiError(404, 'entry not found');
-  try { return resolve(root, id); }
-  catch (error) {
+  assertStoreEntries(root);
+  try {
+    const entry = resolve(root, id);
+    assertEntryPaths(root, entry.dir);
+    return entry;
+  } catch (error) {
     if (error instanceof UserError) throw new ApiError(/more than one/.test(error.message) ? 400 : 404, error.message);
     throw error;
   }
@@ -116,6 +177,8 @@ function rangeFor(params: URLSearchParams) {
 
 export function dashboardState(root: string, range: string | URLSearchParams = new URLSearchParams(), options: ScheduleOptions = {}) {
   const selected = rangeFor(typeof range === 'string' ? new URLSearchParams({ week: range }) : range);
+  assertStoreEntries(root);
+  assertTrashPaths(root);
   const events = eventsWithTitles(root);
   const projects = listProjects(root);
   const tasks = listTasks(root);
@@ -191,7 +254,7 @@ function inboxNotes(root: string) {
   }).sort((first, second) => second.created.localeCompare(first.created) || first.path.localeCompare(second.path));
 }
 
-async function jsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+async function jsonBody(request: http.IncomingMessage, timeoutMs: number): Promise<Record<string, unknown>> {
   if (request.headers['x-2b'] !== '1') throw new ApiError(403, 'missing X-2b header');
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new ApiError(400, 'content-type must be application/json');
@@ -199,19 +262,30 @@ async function jsonBody(request: http.IncomingMessage): Promise<Record<string, u
   if (Number(request.headers['content-length']) > 65536) throw new ApiError(413, 'body exceeds 64 KB');
   const chunks = await new Promise<Buffer[]>((accept, reject) => {
     let size = 0;
-    let tooLarge = false;
     const received: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('error', onError);
+      request.off('aborted', onAborted);
+    };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    const onAborted = () => onError(new ApiError(400, 'request aborted'));
+    const onEnd = () => { cleanup(); accept(received); };
+    const onData = (chunk: Buffer) => {
       size += chunk.length;
       if (size > 65536) {
-        if (!tooLarge) reject(new ApiError(413, 'body exceeds 64 KB'));
-        tooLarge = true;
         received.length = 0;
-      } else if (!tooLarge) received.push(chunk);
-    });
-    request.on('end', () => { if (!tooLarge) accept(received); });
-    request.on('error', reject);
-    request.on('aborted', () => reject(new ApiError(400, 'request aborted')));
+        onError(new ApiError(413, 'body exceeds 64 KB'));
+        request.resume();
+      } else received.push(chunk);
+    };
+    const timer = setTimeout(() => onError(new ApiError(408, 'request body timed out')), timeoutMs);
+    request.on('data', onData);
+    request.on('end', onEnd);
+    request.on('error', onError);
+    request.on('aborted', onAborted);
   });
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -226,7 +300,7 @@ function textField(body: Record<string, unknown>, key: string, optional = false)
   return body[key] as string;
 }
 
-function writeRoute(root: string, route: string, body: Record<string, unknown>, options: ScheduleOptions) {
+function writeRoute(root: string, route: string, body: Record<string, unknown>, options: DashboardOptions) {
   const allowed: Record<string, string[]> = {
     '/api/status': ['id', 'status', 'reason'], '/api/set': ['id', 'field', 'value'],
     '/api/run': ['id'], '/api/delete': ['id'], '/api/restore': ['trashId'],
@@ -234,26 +308,35 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
   };
   if (!allowed[route]) throw new ApiError(404, 'not found');
   if (Object.keys(body).some(key => !allowed[route].includes(key))) throw new ApiError(400, 'unknown field');
+  assertStoreEntries(root);
   if (route === '/api/restore') {
     const trashId = textField(body, 'trashId')!;
-    if (!listTrash(root).some(item => item.trashId === trashId)) throw new ApiError(404, 'trash entry not found');
+    assertTrashPaths(root);
+    const item = listTrash(root).find(item => item.trashId === trashId);
+    if (!item) throw new ApiError(404, 'trash entry not found');
+    assertEntryPaths(root, path.join(root, 'projects', item.project, 'tasks', item.task));
     return { ok: true, entry: flatten(restoreTask(root, trashId, options)) };
   }
   if (route === '/api/task') {
-    const project = textField(body, 'project')!;
-    if (findEntry(root, project).kind !== 'project') throw new ApiError(400, 'project must be a project id');
+    const project = findEntry(root, textField(body, 'project')!);
+    if (project.kind !== 'project') throw new ApiError(400, 'project must be a project id');
     const slug = textField(body, 'slug')!;
+    assertSlug(slug, 'task');
+    const folder = /^\d{4}-\d{2}-\d{2}-/.test(slug) ? slug : `${localDate()}-${slug}`;
+    assertEntryPaths(root, project.dir);
+    assertEntryPaths(root, path.join(project.dir, 'tasks', folder));
     const title = textField(body, 'title')!;
     let description = textField(body, 'body', true);
     const fromNote = textField(body, 'fromNote', true);
     if (fromNote !== undefined) {
-      if (!fromNote.startsWith('inbox/') || path.extname(fromNote).toLowerCase() !== '.md') throw new ApiError(400, 'fromNote must be an inbox Markdown path');
+      if (!/^(inbox|learnings)\//.test(fromNote) || path.extname(fromNote).toLowerCase() !== '.md') throw new ApiError(400, 'fromNote must be an inbox or learnings Markdown path');
       const file = storeFile(root, fromNote);
-      const inboxRoot = path.join(fs.realpathSync(root), 'inbox') + path.sep;
-      if (!fs.realpathSync(file).startsWith(inboxRoot)) throw new ApiError(404, 'not found');
+      const realRoot = fs.realpathSync(root);
+      const realFile = fs.realpathSync(file);
+      if (!['inbox', 'learnings'].some(folder => realFile.startsWith(path.join(realRoot, folder) + path.sep))) throw new ApiError(404, 'not found');
       description = parse(fs.readFileSync(file, 'utf8')).body;
     }
-    const task = createTask(root, project, slug, { title, body: description });
+    const task = createTask(root, project.id, slug, { title, body: description });
     if (fromNote !== undefined) appendLog(task.dir, 'from note', fromNote);
     return { ok: true, entry: flatten(task) };
   }
@@ -273,12 +356,19 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
     setField(entry, field, textField(body, 'value')!);
     return { ok: true, entry: flatten(entry) };
   }
-  if (route === '/api/delete') return { ok: true, trashId: trashTask(root, entry, options).trashId };
-  runTask(root, entry);
-  return { ok: true, entry: flatten(findEntry(root, entry.id)) };
+  if (route === '/api/delete') {
+    assertTrashPaths(root);
+    return { ok: true, trashId: trashTask(root, entry, options).trashId };
+  }
+  if (entry.kind !== 'task' || entry.fields.kind !== 'recurring') throw new ApiError(400, 'only recurring tasks can run');
+  if (options.startRun) options.startRun(entry.id);
+  else spawn(NODE_COMMAND[0], [...NODE_COMMAND.slice(1), 'run', entry.id], {
+    detached: true, stdio: 'ignore', env: { ...process.env, TWOB_HOME: root },
+  }).unref();
+  return { ok: true, started: true };
 }
 
-export function startDashboard(root: string, port: number, options: ScheduleOptions = {}): http.Server {
+export function startDashboard(root: string, port: number, options: DashboardOptions = {}): http.Server {
   root = path.resolve(root);
   const server = http.createServer(async (request, response) => {
     const sendJson = (data: unknown, status = 200) => {
@@ -297,7 +387,7 @@ export function startDashboard(root: string, port: number, options: ScheduleOpti
         throw new ApiError(403, 'forbidden host');
       }
       if (request.method === 'POST') {
-        const body = await jsonBody(request);
+        const body = await jsonBody(request, options.bodyTimeoutMs ?? 10000);
         sendJson(writeRoute(root, url.pathname, body, options));
         return;
       }
@@ -311,7 +401,7 @@ export function startDashboard(root: string, port: number, options: ScheduleOpti
       else if (url.pathname === '/api/state') sendJson(dashboardState(root, url.searchParams, options));
       else if (url.pathname === '/api/entry') sendJson(entryDetail(root, url.searchParams.get('id') ?? '', options));
       else if (url.pathname === '/api/inbox') sendJson({ notes: inboxNotes(root) });
-      else if (url.pathname === '/api/trash') sendJson(listTrash(root));
+      else if (url.pathname === '/api/trash') { assertTrashPaths(root); sendJson(listTrash(root)); }
       else if (url.pathname === '/api/render' || url.pathname === '/api/file') {
         const file = storeFile(root, url.searchParams.get('path') ?? '');
         if (url.pathname === '/api/render') {
@@ -324,6 +414,10 @@ export function startDashboard(root: string, port: number, options: ScheduleOpti
       } else throw new ApiError(404, 'not found');
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+      if (error instanceof ApiError && error.status === 408) {
+        response.setHeader('Connection', 'close');
+        response.once('finish', () => request.destroy());
+      }
       sendJson({ error: message }, error instanceof ApiError ? error.status : error instanceof UserError ? 400 : 500);
     }
   });

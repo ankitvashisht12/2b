@@ -8,13 +8,13 @@ import type { AddressInfo } from 'node:net';
 import { createProject, createTask, createNote, appendLog, localDate, writeEntry } from '../src/store.ts';
 import { openDashboard, startDashboard } from '../src/dash.ts';
 
-async function fixture(context: TestContext) {
+async function fixture(context: TestContext, options: { bodyTimeoutMs?: number; startRun?: (taskId: string) => void } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), '2b-dashboard-'));
   const agentsDir = path.join(root, 'agents');
   const project = createProject(root, 'sample', { area: 'work', title: 'Sample project' });
   const task = createTask(root, project.id, 'task', { title: 'Sample task', body: 'A useful task description with more than forty non-space characters for the reader.' });
   const job = createTask(root, project.id, 'job', { title: 'Sample job', every: 'hourly', run: 'command', command: 'true' });
-  const server = startDashboard(root, 0, { agentsDir, load: false });
+  const server = startDashboard(root, 0, { agentsDir, load: false, startRun: () => {}, ...options });
   await new Promise<void>(done => server.once('listening', done));
   context.after(async () => {
     await new Promise<void>(done => server.close(() => done()));
@@ -118,14 +118,21 @@ test('POST set updates permitted fields', async context => {
   }
 });
 
-test('POST run runs recurring tasks and rejects normal tasks', async context => {
-  const { post, get, job, task } = await fixture(context);
+test('POST run starts recurring tasks without waiting and rejects normal tasks', async context => {
+  const startedTasks: string[] = [];
+  const { post, get, job, task } = await fixture(context, { startRun: taskId => { startedTasks.push(taskId); } });
+  job.fields.command = 'sleep 5';
+  writeEntry(job);
   assert.equal((await post('/api/run', { id: task.id })).status, 400);
-  const response = await post('/api/run', { id: job.id });
+  const startedAt = Date.now();
+  const response = await post('/api/run', { id: 'job' });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).entry['last-result'], 'ok');
+  assert.deepEqual(await response.json(), { ok: true, started: true });
+  assert.ok(Date.now() - startedAt < 1000);
+  assert.deepEqual(startedTasks, [job.id]);
+  assert.equal((await get('/api/ping')).status, 200);
   const detail = await (await get('/api/entry?id=' + job.id)).json();
-  assert.equal(detail.job.runs.length, 1);
+  assert.equal(detail.job.runs.length, 0);
 });
 
 test('POST delete moves a recurring task to trash', async context => {
@@ -277,15 +284,121 @@ test('status schedule failures return success with warnings after saving', async
   assert.ok(result.warnings.length);
 });
 
-test('task source must remain inside inbox and cannot escape through symlinks', async context => {
-  const { root, post } = await fixture(context);
+test('task sources accept learnings and reject paths outside both note folders', async context => {
+  const { root, post, get } = await fixture(context);
   const source = createNote(root, 'learnings', 'source', 'Learning');
+  fs.appendFileSync(source, '\nLearning description.\n');
+  const response = await post('/api/task', { project: 'sample', slug: 'learning', title: 'Learning', fromNote: path.relative(root, source) });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.match((await (await get('/api/entry?id=' + result.entry.id)).json()).body, /Learning description/);
+  assert.ok(fs.existsSync(source));
   fs.mkdirSync(path.join(root, 'inbox'), { recursive: true });
-  fs.symlinkSync(source, path.join(root, 'inbox', 'link.md'));
-  for (const fromNote of [path.relative(root, source), 'inbox/../' + path.relative(root, source), 'inbox/link.md']) {
+  const outside = path.join(root, 'outside.md');
+  fs.writeFileSync(outside, '# Outside');
+  fs.symlinkSync(outside, path.join(root, 'inbox', 'link.md'));
+  fs.symlinkSync(outside, path.join(root, 'learnings', 'link.md'));
+  for (const fromNote of ['outside.md', 'inbox/../outside.md', 'inbox/link.md', 'learnings/link.md']) {
     const response = await post('/api/task', { project: 'sample', slug: 'unsafe', title: 'Unsafe', fromNote });
     assert.ok([400, 404].includes(response.status));
   }
+});
+
+test('stalled POST bodies return 408 JSON and close the connection', { timeout: 3000 }, async context => {
+  const { port, get } = await fixture(context, { bodyTimeoutMs: 200 });
+  const startedAt = Date.now();
+  const result = await new Promise<{ status?: number; body: string }>((done, reject) => {
+    const request = http.request({ hostname: '127.0.0.1', port, path: '/api/set', method: 'POST', headers: {
+      'X-2b': '1', 'content-type': 'application/json', 'content-length': '100',
+    } }, response => {
+      let body = '';
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => done({ status: response.statusCode, body }));
+    });
+    context.after(() => request.destroy());
+    request.on('error', reject);
+    request.setTimeout(2000, () => request.destroy(new Error('server did not time out the request body')));
+    request.write('{"id":');
+  });
+  assert.equal(result.status, 408);
+  assert.deepEqual(JSON.parse(result.body), { error: 'request body timed out' });
+  assert.ok(Date.now() - startedAt < 2000);
+  assert.equal((await get('/api/ping')).status, 200);
+});
+
+for (const linkedTarget of ['readme.md', 'log.md', 'rules.md', 'folder']) {
+  test(`entry reads and writes reject an outside ${linkedTarget} symlink`, async context => {
+    const { job, get, post } = await fixture(context);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), '2b-entry-outside-'));
+    context.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+    const outsideTask = path.join(outside, 'job');
+    fs.cpSync(job.dir, outsideTask, { recursive: true });
+    fs.writeFileSync(path.join(outsideTask, 'rules.md'), '# Rules\n\n- Outside rule\n');
+    const originalFiles = new Map(['readme.md', 'log.md', 'rules.md'].map(file => [file, fs.readFileSync(path.join(outsideTask, file))]));
+    if (linkedTarget === 'folder') {
+      fs.rmSync(job.dir, { recursive: true });
+      fs.symlinkSync(outsideTask, job.dir);
+    } else {
+      fs.rmSync(path.join(job.dir, linkedTarget), { force: true });
+      fs.symlinkSync(path.join(outsideTask, linkedTarget), path.join(job.dir, linkedTarget));
+    }
+    const requests = [
+      () => get('/api/entry?id=' + job.id),
+      () => post('/api/status', { id: job.id, status: 'paused', reason: 'Review' }),
+      () => post('/api/set', { id: job.id, field: 'title', value: 'Changed' }),
+      () => post('/api/run', { id: job.id }),
+      () => post('/api/delete', { id: job.id }),
+    ];
+    for (const send of requests) {
+      const response = await send();
+      assert.equal(response.status, 404);
+      assert.deepEqual(Object.keys(await response.json()), ['error']);
+      for (const [file, contents] of originalFiles) assert.deepEqual(fs.readFileSync(path.join(outsideTask, file)), contents);
+    }
+    assert.ok(!fs.existsSync(path.join(outsideTask, 'runs')));
+  });
+
+  test(`restore rejects an outside ${linkedTarget} symlink`, async context => {
+    const { root, job, post } = await fixture(context);
+    const deleted = await (await post('/api/delete', { id: job.id })).json();
+    const trashedTask = path.join(root, '.trash', deleted.trashId, 'task');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), '2b-restore-outside-'));
+    context.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+    const outsideTask = path.join(outside, 'job');
+    fs.cpSync(trashedTask, outsideTask, { recursive: true });
+    fs.writeFileSync(path.join(outsideTask, 'rules.md'), '# Rules\n');
+    const originalFiles = new Map(['readme.md', 'log.md', 'rules.md'].map(file => [file, fs.readFileSync(path.join(outsideTask, file))]));
+    const target = linkedTarget === 'folder' ? trashedTask : path.join(trashedTask, linkedTarget);
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.symlinkSync(linkedTarget === 'folder' ? outsideTask : path.join(outsideTask, linkedTarget), target);
+    const response = await post('/api/restore', { trashId: deleted.trashId });
+    assert.equal(response.status, 404);
+    assert.deepEqual(Object.keys(await response.json()), ['error']);
+    for (const [file, contents] of originalFiles) assert.deepEqual(fs.readFileSync(path.join(outsideTask, file)), contents);
+  });
+}
+
+test('task creation rejects symlinked project metadata and new task parents', async context => {
+  const { project, post } = await fixture(context);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), '2b-create-outside-'));
+  context.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const outsideFile = path.join(outside, 'readme.md');
+  const original = fs.readFileSync(path.join(project.dir, 'readme.md'));
+  fs.writeFileSync(outsideFile, original);
+  for (const file of ['readme.md', 'log.md', 'rules.md']) {
+    const target = path.join(project.dir, file);
+    const previous = fs.existsSync(target) ? fs.readFileSync(target) : null;
+    fs.rmSync(target, { force: true });
+    fs.symlinkSync(outsideFile, target);
+    assert.equal((await post('/api/task', { project: project.id, slug: 'unsafe', title: 'Unsafe' })).status, 404);
+    assert.deepEqual(fs.readFileSync(outsideFile), original);
+    fs.unlinkSync(target);
+    if (previous) fs.writeFileSync(target, previous);
+  }
+  fs.rmSync(path.join(project.dir, 'tasks'), { recursive: true });
+  fs.symlinkSync(outside, path.join(project.dir, 'tasks'));
+  assert.equal((await post('/api/task', { project: project.id, slug: 'unsafe', title: 'Unsafe' })).status, 404);
+  assert.deepEqual(fs.readdirSync(outside), ['readme.md']);
 });
 
 
