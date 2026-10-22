@@ -37,16 +37,14 @@ export function nextRun(intervals: CalendarInterval[], from: Date): Date {
     || (interval.Weekday !== undefined && (!Number.isInteger(interval.Weekday) || interval.Weekday < 0 || interval.Weekday > 7)))) {
     throw new UserError('invalid calendar intervals or start time');
   }
-  const candidate = new Date(from);
-  candidate.setSeconds(0, 0);
-  candidate.setTime(candidate.getTime() + 60_000);
-  for (let minute = 0; minute < 9 * 24 * 60; minute += 1) {
+  const candidate = new Date(Math.floor(from.getTime() / 60_000) * 60_000 + 60_000);
+  for (let minute = 0; minute < 15 * 24 * 60; minute += 1) {
     if (intervals.some(interval => candidate.getMinutes() === interval.Minute
       && (interval.Hour === undefined || candidate.getHours() === interval.Hour)
       && (interval.Weekday === undefined || candidate.getDay() === interval.Weekday % 7))) return candidate;
     candidate.setTime(candidate.getTime() + 60_000);
   }
-  throw new UserError('no matching calendar time in the next nine days');
+  throw new UserError('no matching calendar time in the next fifteen days');
 }
 
 export function humanSchedule(spec: string): string {

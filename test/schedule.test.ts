@@ -233,6 +233,33 @@ test('next run uses local daily, weekday, hourly, and multi-day intervals', () =
     ['Daily 19:00', 'Weekdays 14:00', 'Mon, Fri 10:00', 'Hourly']);
 });
 
+for (const scenario of [
+  {
+    name: 'stays after the start time in the repeated daylight saving hour',
+    spec: 'hourly', from: '2026-11-01T01:15:30-05:00', expected: '2026-11-01T02:00:00-05:00',
+  },
+  {
+    name: 'finds the next week when daylight saving skips the scheduled time',
+    spec: 'sun 02:30', from: '2026-03-02T00:00:00-05:00', expected: '2026-03-15T02:30:00-04:00',
+  },
+]) {
+  test(`next run ${scenario.name}`, () => {
+    const scheduleModule = new URL('../src/schedule.ts', import.meta.url).href;
+    const result = childProcess.spawnSync(process.execPath, [
+      '--experimental-strip-types', '--no-warnings', '--input-type=module', '--eval',
+      `import { nextRun, parseEvery } from ${JSON.stringify(scheduleModule)};
+       const from = new Date(${JSON.stringify(scenario.from)});
+       const next = nextRun(parseEvery(${JSON.stringify(scenario.spec)}), from);
+       console.log(JSON.stringify({ from: from.getTime(), next: next.getTime(), offset: from.getTimezoneOffset() }));`,
+    ], { encoding: 'utf8', timeout: 3000, env: { ...process.env, TZ: 'America/New_York' } });
+    assert.equal(result.status, 0, result.stderr);
+    const actual = JSON.parse(result.stdout);
+    assert.equal(actual.offset, 300);
+    assert.ok(actual.next > actual.from, 'next run must be after the start time');
+    assert.equal(actual.next, new Date(scenario.expected).getTime());
+  });
+}
+
 test('jobs overview scopes loaded plists and returns limited newest run history', () => {
   const root = makeStore();
   const agentsDir = fs.mkdtempSync(path.join(os.tmpdir(), '2b-agents-'));
