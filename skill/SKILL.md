@@ -10,7 +10,7 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 ## Model
 
 - **Project**: lasts weeks or months. Area `work` or `personal`. Status `active | paused | on-hold | done | archived`.
-- **Task**: the atomic unit, about one PR or one investigation. Status `todo | doing | blocked | done | dropped`. Kind `normal` or `recurring`.
+- **Task**: the atomic unit, about one PR or one investigation. Status `todo | doing | blocked | done | dropped | paused`. Kind `normal` or `recurring`.
 - **Artifact**: a file in a task folder, registered with `about` and `why`.
 - **Log**: every CLI write appends a dated line. `2b week` reads these.
 - `paused`, `on-hold`, `blocked`, `dropped` need `--reason`.
@@ -33,6 +33,15 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 | "I learned X" | `2b learn <slug> --title "..."` |
 | "Open the dashboard" | `2b dash --open` |
 
+## Priority and descriptions
+
+- Projects: 🔥 P1 = urgent, ⚡ P2 = high, 🎯 P3 = normal (default), 🌱 P4 = low, 💤 P5 = someday.
+- Tasks: `high`, `med` (default), `low`. Map an urgent or important task to `high`.
+- Pass `--priority P1` on `new project`, or `--priority high` on `new task`.
+- Use `2b set <ref> priority <value>` to change it. Use `2b ls --priority P1` or `2b ls --tasks --priority high` to filter.
+- Include priority in answers about active work. Project lists sort by priority then deadline. Task lists sort by priority then due date then id.
+- Every project and task must have a readme body at creation. Explain what it is, why it exists, and its current state. Pass `--body "..."` at creation. Keep the body current as the work changes. Edit the body only; keep frontmatter and logs under CLI control.
+
 ## Before you work on a task
 
 1. `2b show <task>` — read status, links, artifacts, and recent log.
@@ -49,6 +58,8 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 
 - "Every day at 7pm, do X" → `2b new task <project> <slug> --title "..." --every "daily 19:00" --run agent --body "<the full instruction>"`
 - "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --title "Open dashboard" --every "weekdays 14:00" --run command --command "2b dash --open"`
+- `2b delete <task>` moves a recurring task to `.trash/` and stops its schedule. It prints a trash id.
+- `2b trash ls` lists deleted tasks. `2b restore <trashId>` brings one back as `paused`, with reason `restored from trash`. Resume it with `2b status <task> doing` when ready.
 - Schedule format: `daily HH:MM`, `weekdays HH:MM`, `mon,fri HH:MM`, `hourly`.
 - `2b schedule ls` shows last results. `2b run <task>` runs one now. A failed run sends a notification and shows on the dashboard; read its `last-log`, fix the cause, and run it again.
 
