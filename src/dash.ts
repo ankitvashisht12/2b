@@ -510,7 +510,7 @@ export function startDashboard(root: string, port: number, options: DashboardOpt
         return;
       }
       if (request.method !== 'GET') throw new ApiError(405, 'method not allowed');
-      if (['/', '/app.css', '/app.js'].includes(url.pathname)) {
+      if (['/', '/app.css', '/app.js', '/policy.js'].includes(url.pathname)) {
         const file = path.join(DASH_DIR, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
         const content = fs.readFileSync(file);
         response.writeHead(200, { 'content-type': CONTENT_TYPES[path.extname(file)] });
