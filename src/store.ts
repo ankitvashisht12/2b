@@ -231,7 +231,7 @@ export function createTask(root: string, project: string, slug: string, options:
     assertOneOf(run, ['agent', 'command'], 'run');
     if (run === 'command' && !options.command) throw new UserError('a command task needs --command');
     if (run === 'agent' && !options.body) throw new UserError('an agent task needs --body with the rule the agent follows');
-    const agent = options.agent ?? 'claude';
+    const agent = options.agent ?? 'codex';
     assertOneOf(agent, ['claude', 'codex'], 'agent');
     Object.assign(fields, {
       every: options.every, run, agent: run === 'agent' ? agent : null, command: options.command ?? null,

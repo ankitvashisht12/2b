@@ -252,7 +252,7 @@ export function runTask(root: string, task: Entry, { timeoutMs = DEFAULT_TIMEOUT
   if (task.fields.kind !== 'recurring') throw new UserError(`${task.id} is not a recurring task`);
   const argv = task.fields.run === 'command'
     ? ['/bin/sh', '-c', String(task.fields.command ?? '')]
-    : agentArgv(String(task.fields.agent ?? 'claude'), buildPrompt(root, task), root);
+    : agentArgv(String(task.fields.agent ?? 'codex'), buildPrompt(root, task), root);
   const runsDir = path.join(task.dir, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   const logName = `${fileTimestamp()}-${String(Date.now() % 1000).padStart(3, '0')}`;
