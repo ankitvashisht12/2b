@@ -1,80 +1,57 @@
-# Dashboard UI and UX review — 29 October 2026
+# Dashboard refinement review — 29 October 2026
 
-Method: two independent reviewers. A assessed design and task flow. B assessed code, accessibility, and browser evidence. They reviewed local main at `bb1f799`, before the changes in this report. Their findings were combined only after both finished.
+This review covers the separate `t3/refine-dashboard-ux` branch. Its baseline is main at `d45dc1136bafe170287fa1848f70796d82c773f2`. The final reviewed code is `a76640befafbf735d99450d28880693cc1c659c4`. Documentation and screenshot commits follow that code revision. This refinement was developed separately from main. It preserves the store model and saved data. Release metadata identifies it as v2.1.0.
 
-Sources: [Impeccable critique](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/critique.md), [Impeccable Operate guidance](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md), and [Emil Kowalski design engineering](https://github.com/emilkowalski/skills/blob/main/skills/emil-design-eng/SKILL.md). These were read as upstream instructions. No skill was installed globally.
+## Method
 
-## Overall assessment
+Three rounds used two independent reviewers each. Assessment A reviewed design and task flow. Assessment B reviewed implementation and browser evidence. The reports were combined only after A finished. Reviewers did not read the other assessment before reporting.
 
-The project, task, collection, and output model fits a second brain. Source links, backlinks, a quiet palette, and shared controls give it a useful identity. The main gap is task order: returning users need to find content or choose an action before they see a creation form or a large backlog. The best next investment is reliable search and filters, then a clearer Home page. Extra decoration or animation would not solve those problems.
+References: [Impeccable critique](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/critique.md), [Operate guidance](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md), and [Emil Kowalski design engineering](https://github.com/emilkowalski/skills/blob/main/skills/emil-design-eng/SKILL.md). The Impeccable launcher is absent. Its attempted detector command failed with `no such file or directory`. No detector result, overlay, automated design score, or accessibility certification is claimed. README and incumbent code supplied product context.
 
-## Baseline design health
+T3 preview navigation and DOM tools were used where available. Fresh review tabs hit the server tab limit, and screenshot calls timed out. After bounded failures, the installed Playwright Chromium supplied fresh contexts and measured viewports. Review contexts blocked all requests except GET.
 
-Scores use 0 for failed support and 4 for excellent support. These are baseline scores, not a new score after the fixes below. Some checks were limited to source and DOM evidence.
+## Review and fix rounds
 
-| Heuristic | Score / 4 | Main finding |
+| Round | Reviewed revision | Findings and response |
 | --- | --- | --- |
-| System status | 3 | Loading and recovery exist; save progress was generic. |
-| Real-world terms | 2 | Some job service and drawer labels expose implementation terms. |
-| Control and freedom | 3 | Close and undo patterns exist; cancellation has no restore UI. |
-| Consistency | 2 | Shared filters have different effects across pages. |
-| Error prevention | 2 | Reminder date and repeat fields could both be filled. |
-| Recognition | 2 | Repeat syntax and CLI capture require recall. |
-| Efficiency | 3 | Keyboard shortcuts and the palette help frequent use. |
-| Minimal design | 2 | Forms and the full open-task list compete with content. |
-| Error recovery | 3 | Retry works; form failures relied mainly on toasts. |
-| Help | 3 | Shortcut help exists; scheduling needs local guidance. |
-| **Total** | **25/40** | **A useful base with clarity gaps.** |
+| 1 | `9a85329` | Fixed empty Jobs losing its creation button, drafts crossing projects, inconsistent navigation filters, wrong Learnings defaults, scheduled jobs in human work, and squeezed phone headings. Added exact capture-target guards and validation before job writes. |
+| 2 | `ff32746` | Fixed first-use Jobs opening an impossible form without projects, and restored capture drafts losing a user-selected destination. Aligned UI statuses with the store and improved collection headings, excerpts, counts, and copy. |
+| 3 | `a76640b` | Both independent reviewers found no reproducible P0, P1, or P2 defects in their tested scope. Prior first-use and draft fixes passed browser checks. This is a bounded result, not a claim that every possible path is defect-free. |
 
-The baseline technical audit scored 10/20: accessibility 2, performance 3, theming 2, responsive design 1, implementation integrity 2. No full accessibility conformance claim is made.
-
-## What works
-
-- Output links and backlinks connect saved knowledge with the action that produced it.
-- Due groups urgent work before later work and collapses undated items.
-- Shared tokens, visible focus, skeleton loading, retry controls, and reduced-motion support are sound foundations.
-
-## Changes made in this pass
+## Resulting behavior
 
 | Before | After | Why |
 | --- | --- | --- |
-| Collection, note, and reminder forms occupy their pages | New collection, New note, and New reminder open dialogs | Saved content is visible first. |
-| Date and repeat are both enabled | One-time or repeating mode enables only the relevant field | Prevent an invalid timing combination. |
-| Errors appear mainly as toasts | Dialog errors preserve input and receive focus; saving has a progress label | The user can recover in place. |
-| Eight phone destinations use six columns | Home, Projects, Collections, Reminders, and More use one row | All pages remain reachable. More contains Due, Timeline, Jobs, and Inbox. |
-| New forms use a separator border token | Form fields use the control border token in both themes | Editable regions stay visible. |
-| Collection and note drawers announce Task detail | Drawers announce their entry kind | Screen reader context matches the content. |
-| Empty filtered collections ask users to create content | Filtered emptiness offers filter reset | Hidden content is not presented as missing content. |
-| Timeline copy implies measured time | Copy describes activity and changes | Logs do not measure time spent. |
+| Shared filters included choices that some views ignored | One view policy governs visible controls, accepted values, URL cleanup, and navigation | Active filters have a predictable meaning. |
+| A local search could follow a sidebar link but disappear through More | View changes clear local query, status, and priority consistently; Back restores the previous route | Desktop and phone navigation agree. |
+| Collection search missed words inside notes | Results include nested note bodies and safe text excerpts | Users can find content and see why it matched. |
+| Home mixed a backlog and automated jobs under Now | Overdue, In progress, and Next actions show ordinary tasks, with five rows before Show more | Returning users can choose a human action. |
+| Long activity lists dominated the page | Extra activity groups fold behind Show more | History stays available without filling the initial page. |
+| Capture often required a terminal | Project, task, job, collection, note, reminder, and Inbox creation have direct dialogs | Users can record work without switching tools. |
+| A draft could reopen in the wrong project or folder | Draft keys include their opening context; restored user choices remain intact | An interruption does not silently change the destination. |
+| A pending save could clear another dialog's draft | Cleanup uses the submitted form's key and snapshot | Concurrent interactions preserve unsaved work. |
+| Repeat schedules required syntax recall | Jobs and reminders share named repeat choices, selected days, and a time control | Common schedules need no command syntax. |
+| First-use Jobs offered a form without a usable project | Jobs explains the prerequisite and opens New project | The first action can succeed. |
+| Creation could leave cached detail views stale | A save refreshes summaries and invalidates affected detail/document caches | Newly saved content appears when reopening its context. |
+| Capture and schedule validation could occur too late | Exact capture paths and schedule syntax are checked before writes | Invalid requests do not leave partial work or outside files. |
 
-Dialogs support Cancel, close, Escape, backdrop dismissal, initial focus, native modal focus containment, and return focus. Project-level collection creation selects that project. Optional reminder links are disclosed on request.
+The visual direction remains restrained. Shared typography, semantic colors, familiar lists, and native dialogs support frequent use. Collection titles retain heading size. Phone actions wrap below descriptions. Human project names, singular/plural counts, compact search placeholders, and local New note actions reduce translation and repetition.
 
-## Priority improvements still recommended
+## Validation
 
-1. **P1 — Make filters and search truthful.** The toolbar shows Priority on Reminders, which has no priority field. Inbox ignores several shared controls. Collection search matches the collection rather than searching all nested note content. Show only supported filters. Name search scope. Return matching notes with their collection context. Baseline locations: `dash/app.js:164`, `:312`, `:321`, `:468`, `:487`.
-2. **P2 — Make Home help choose a next action.** Now includes every todo and doing task. Due soon starts today, so overdue work is not called out there. Show overdue and in-progress work first, then a small next-action group with access to the full backlog. Baseline locations: `dash/app.js:216`, `:219`, `:225`.
-3. **P2 — Add direct capture where users need it.** Creating projects, tasks, jobs, and inbox notes still often leads to CLI instructions. Add quick capture and project-based task creation. Keep CLI help available. Baseline locations: `dash/app.js:224`, `:258`, `:305`, `:459`, `:474`, `:964`.
-4. **P2 — Use controls for common repeat schedules.** The dialog now separates one-time and repeat modes, but repeats still use text syntax. Offer daily, weekdays, or selected days with a time picker. Keep custom syntax under an advanced option. Explain local delivery timing. Baseline location: `dash/app.js:329`.
-5. **P3 — Use clearer job and save feedback.** Replace Loaded in launchd with a plain service readiness state and a repair action. Name the saved object and offer Open when useful. Baseline locations: `dash/app.js:347`, `:460`.
+- All **195 automated tests passed**, with test files run serially to avoid contention in the existing Markdown speed check.
+- Focused policy tests compare UI statuses with exported store statuses. They also cover unsupported filters, mixed views, navigation context, task groups, schedule output, drafts, and search excerpts.
+- Capture tests cover existing and dangling outside symlink targets. Invalid job schedules add no task directory.
+- Write-based browser regressions use an isolated DEMO store, disabled notifications, and no real scheduler loading. They cover creation, selected-day submissions, error recovery, destination drafts, the pending-save race, and detail refresh.
+- Independent reviews covered all eight views at measured 1440px desktop and 390px phone widths in light and dark themes. No page JavaScript errors or document horizontal overflow occurred in those sweeps.
+- Parent acceptance checks repeated draft destinations, paused-job filters, cross-project isolation, all eight views, and nested note content search without writes.
+- Existing content was inspected through a separate local preview that blocks non-GET methods. No dashboard writes were made to the live store. A metadata check identified an unrelated ongoing work-log append; it was left untouched.
+- Main stayed at the baseline revision during implementation and validation.
 
-Suggested Impeccable follow-ups: clarify for filter/search scope; layout for Home; onboard for direct capture; harden for scheduling controls. These are recommendations, not completed changes.
+The PR body includes four main/updated screenshot pairs: Home, body-content search, repeating reminder creation, and phone Home. Both sides use the same demo snapshot and clock. No private notes appear in those images. Capture provenance is in [the screenshot manifest](media/dashboard-refinement/capture-manifest.json).
 
-## User tasks and cognitive load
+## Remaining limits
 
-- A first-time user needs a direct way to create a project or capture a thought. CLI-only routes force a tool switch.
-- A frequent user needs each active filter to have a predictable effect. Inert controls weaken trust.
-- A user returning after interruption needs a short, clear next-action view. The full todo list asks them to rebuild priorities.
+Drafts are held in memory until reload. Body search covers stored notes, not arbitrary binary artifact contents. Jobs and Projects retain locally scrollable tables on phones. Physical touch, screen reader use, and every contrast pair have not been tested. No field performance benchmark or full accessibility conformance claim is made.
 
-The baseline exposed eight navigation choices, five toolbar groups, eight project columns, and the full open-task set. Counts alone do not prove poor usability. The stronger evidence is a missing next-action hierarchy, hidden content, and controls that do not match the page. Group related choices and disclose advanced controls when needed.
-
-## Evidence and limits
-
-Each reviewer used a separate browser tab and did not read the other report. A finished before B's findings entered synthesis. The Impeccable launcher is absent. The real detector attempt returned exit 127: `zsh:1: no such file or directory: .agents/skills/impeccable/scripts/impeccable`. No detector rules, overlay, generated slug, or trend data are claimed. No ignore file existed. Product context came from README and incumbent code; PRODUCT.md and DESIGN.md do not exist.
-
-T3 browser snapshots timed out. Reviewers used source, computed styles, DOM measurements, safe navigation, and no store writes. Their measured viewport was 1402 × 877. A requested phone viewport did not apply, so their phone findings were source-based. B measured the original light form boundary contrast at 1.257:1. Its resource timing sample was one local run, not a field benchmark.
-
-The implementation was then checked separately with installed Playwright Chromium. Tests used an isolated store with scheduler loading disabled. At 1440px, dialogs were visually inspected. At a measured 390px width, the reminder dialog was 356px wide, stayed within the viewport, and had no horizontal overflow. Light and dark captures were checked. Creation, validation recovery, cancellation, Escape, focus return, focus containment, schedule mode switching, project selection, and the mobile More menu were exercised. No page JavaScript errors occurred. Physical touch and screen reader testing remain untested.
-
-Temporary review and test output lived under `/tmp`. No real reminder was scheduled and no real journal entry was created. The isolated preview server is stopped after verification. This file is the saved review; Impeccable's own storage and trend commands are unavailable.
-
-Questions skipped: the requested creation flow is complete. Broader changes are listed for the next pass rather than assumed to be approved.
+The [earlier baseline review](https://github.com/ankitvashisht12/2b/blob/d45dc1136bafe170287fa1848f70796d82c773f2/docs/dashboard-ux-review.md) remains available for history. The findings above describe the current branch, rather than leaving resolved baseline issues listed as open work.

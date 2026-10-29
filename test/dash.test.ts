@@ -514,3 +514,35 @@ test('openDashboard refuses a port owned by another store', async context => {
   const port = (server.address() as AddressInfo).port;
   await assert.rejects(openDashboard(root, port), { message: `port ${port} is used by another 2b store or program` });
 });
+
+test('dashboard capture adapters preserve content and reject invalid destinations', async context => {
+  const { post, get } = await fixture(context);
+  assert.equal((await post('/api/project', { slug: 'direct', title: 'Direct capture', area: 'personal', body: 'Project context' })).status, 200);
+  assert.equal((await post('/api/capture', { slug: 'thought', title: 'A thought', folder: 'inbox', body: 'Body-only lighthouse keyword' })).status, 200);
+  const inbox = await (await get('/api/inbox')).json();
+  assert.match(inbox.notes.find((note: any) => note.title === 'A thought').body, /lighthouse/);
+  assert.equal((await post('/api/capture', { slug: 'unsafe', title: 'Unsafe', folder: '../projects', body: 'No write' })).status, 400);
+  assert.equal((await post('/api/project', { slug: '../unsafe', title: 'Unsafe', area: 'personal' })).status, 400);
+  assert.equal((await post('/api/task', { project: 'direct', slug: 'direct-task', title: 'Direct task', body: 'Task context' })).status, 200);
+});
+
+test('capture rejects exact note target symlinks and jobs reject invalid schedules before writes', async context => {
+  const { root, project, post } = await fixture(context);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), '2b-outside-'));
+  context.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'inbox'), { recursive: true });
+  for (const existing of [false, true]) {
+    const slug = existing ? 'outside-existing' : 'outside-missing';
+    const target = path.join(outside, slug + '.md');
+    if (existing) fs.writeFileSync(target, 'untouched');
+    fs.symlinkSync(target, path.join(root, 'inbox', `${localDate()}-${slug}.md`));
+    const response = await post('/api/capture', { folder: 'inbox', slug, title: 'Unsafe', body: 'Must not write' });
+    assert.equal(response.status, 404);
+    assert.equal(fs.existsSync(target), existing);
+    if (existing) assert.equal(fs.readFileSync(target, 'utf8'), 'untouched');
+  }
+  const before = fs.readdirSync(path.join(project.dir, 'tasks'));
+  const response = await post('/api/task', { project: project.id, slug: 'invalid-job', title: 'Invalid job', every: 'invalid schedule' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(fs.readdirSync(path.join(project.dir, 'tasks')), before);
+});

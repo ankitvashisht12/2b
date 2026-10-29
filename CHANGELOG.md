@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-10-29
+
+- Scope dashboard filters and search to each view, including nested note content and excerpts.
+- Separate human action groups from scheduled jobs on Home and fold long activity lists.
+- Add direct project, task, job, and Inbox capture dialogs with contextual draft recovery.
+- Share common schedule controls between jobs and reminders, including selected days.
+- Guide first-time Jobs users to create a project and keep empty-view actions available.
+- Validate capture file targets and job schedules before saving, with regression tests.
+- Centralize dashboard view policies and update detail caches after creation.
 
 - Replace inline collection, note, and reminder forms with creation dialogs.
 - Add clear scheduling modes, inline errors, save progress, and keyboard focus handling.

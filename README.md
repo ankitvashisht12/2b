@@ -5,7 +5,7 @@
   <br><sub><a href="docs/media/2b-demo.mp4">▶ Watch the original demo</a></sub>
 </p>
 
-**2b v2.0** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it.
+**2b v2.1** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it.
 
 ## The model
 
@@ -111,11 +111,15 @@ Failures are saved and retried on the next worker run. `reminder show` includes 
 
 The local dashboard has Home, Projects, Due, Timeline, Jobs, Collections, Reminders, and Inbox tabs. It supports light and dark themes, search, filters, keyboard shortcuts, and a command palette.
 
-- Open a project to see its tasks and collections.
-- Use **New collection** or **New note** in Collections to open a creation dialog. Read notes or files from the collection list. Open a collection or note to see its sources and outputs.
-- Use **New reminder** in Reminders to open a creation dialog. View history and cancel scheduled reminders from the list.
-- Use Jobs to inspect runs, run a job now, pause it, or restore a deleted job.
-- Use Inbox for quick notes and learnings, with an option to turn a note into a task.
+- Home puts overdue and in-progress tasks first. Each group starts with five rows; expand Show more for the rest. Scheduled jobs have their own attention banner.
+- Use **New project** in Projects and **New task** inside a project. Use **New job** in Jobs; first-time users are guided to create a project first.
+- Use **New collection** or **New note** in Collections. A collection also has its own **New note** action. Notes retain their project, collection, and source context.
+- Use **Capture note** in Inbox for a thought or learning. The selected folder is the initial destination. A restored draft keeps the destination you chose.
+- Use **New reminder** in Reminders. Jobs and reminders share controls for daily, weekday, selected-day, and hourly schedules. Advanced syntax remains available. Job times use the Mac's local zone; reminders keep their saved zone.
+- Search applies to the current page. Collection and Inbox searches include note bodies. Collection results show matching excerpts. Filter controls and choices match the page's data.
+- Use Jobs to inspect runs, run a job now, pause it, or restore a deleted job. Source links and backlinks remain available in detail views.
+
+Creation dialogs keep drafts in memory when closed and restore them in the same opening context. Drafts last until page reload; they are not saved notes. Cancel or Escape closes a dialog and returns focus to its button.
 
 On phones, the bottom bar shows Home, Projects, Collections, Reminders, and **More**. More opens Due, Timeline, Jobs, and Inbox.
 
@@ -158,6 +162,6 @@ npm test
 node --check dash/app.js
 ```
 
-Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for v2.0 changes and [the dashboard review](docs/dashboard-ux-review.md) for current UX findings and next steps.
+Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for release changes and [the dashboard review](docs/dashboard-ux-review.md) for current UX findings and next steps.
 
 Codex jobs run with `--sandbox workspace-write` in the store. They can run commands and write store files. Claude jobs restrict their allowed tools to the 2b CLI and read tools. Choose the runner and source data that fit the task.
