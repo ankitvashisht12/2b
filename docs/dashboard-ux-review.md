@@ -78,3 +78,15 @@ The implementation was then checked separately with installed Playwright Chromiu
 Temporary review and test output lived under `/tmp`. No real reminder was scheduled and no real journal entry was created. The isolated preview server is stopped after verification. This file is the saved review; Impeccable's own storage and trend commands are unavailable.
 
 Questions skipped: the requested creation flow is complete. Broader changes are listed for the next pass rather than assumed to be approved.
+
+## Dashboard refinement follow-up
+
+The toolbar now names its search scope. Inbox hides unrelated filters. Collections hide status and priority. Reminders hide priority. Navigation clears search, status, and priority to prevent a task filter from hiding projects or reminders. Unsupported stored filter parameters are ignored. Collection results include matching nested notes and their body text. Inbox search includes body text.
+
+Home separates overdue tasks, in-progress work, and up to five next actions. The full task list remains in each project. Projects and project tasks have direct creation dialogs. Inbox has direct note capture. Jobs have a creation dialog with the existing schedule syntax and local time zone guidance. Reminder repeats offer common schedules and a time control, with an advanced syntax option. Save feedback names the saved entry type. Job service labels use plain readiness terms.
+
+Creation dialogs retain drafts in memory when closed. Successful saves clear that draft. Drafts do not survive a page reload. Existing native dialog focus, Escape, errors, and project preselection remain.
+
+Validation uses a separate DEMO store with schedule loading disabled. Browser checks cover measured 1440px and 390px widths, both themes, all primary routes, overflow, nested body search, filter scope, and reminder draft recovery. T3 snapshots failed twice with `Preview automation snapshot timed out after 15000ms.` The installed Playwright Chromium was used. Evidence lives in `/tmp/2b-dashboard-evidence`. These checks do not establish full accessibility conformance. Real store writes and job runs were not used.
+
+Further review should check capture forms, long content, job recovery wording, and filter behavior across mixed project/task views. The job form still uses advanced text schedule syntax. Reminder day selection currently offers Monday and Friday presets; arbitrary day combinations use advanced syntax. Service repair remains available through the CLI schedule sync command.

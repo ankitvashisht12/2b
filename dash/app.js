@@ -93,6 +93,7 @@ const api = {
   get: url => api.request(url),
   post: (url, body) => api.request(url, { method: 'POST', headers: { 'content-type': 'application/json', 'X-2b': '1' }, body: JSON.stringify(body) }),
 };
+function supportedFilters(view) { return view === 'inbox' ? ['folder'] : view === 'collections' ? ['area', 'project'] : view === 'reminders' ? ['area', 'project', 'status'] : ['area', 'project', 'status', 'priority']; }
 function parseRoute() {
   const [path = '/home', query = ''] = location.hash.slice(1).split('?');
   const params = new URLSearchParams(query);
@@ -103,6 +104,9 @@ function parseRoute() {
   if (kind === 'p') { route.id = decodePath(parts.slice(1).join('/')); route.view = 'project'; }
   if (!['home', 'projects', 'project', 'due', 'timeline', 'jobs', 'collections', 'reminders', 'inbox'].includes(route.view) && !route.view.startsWith('p/')) route.view = 'home';
   if (route.view.startsWith('p/')) { route.projectContext = route.view.slice(2); route.view = 'project'; }
+  const supported = supportedFilters(route.view);
+  for (const name of ['area', 'status', 'priority', 'project', 'folder']) if (!supported.includes(name)) params.delete(name);
+  if (kind !== 't' && kind !== 'p') { const allowedStatuses = route.view === 'reminders' ? ['scheduled', 'sent', 'cancelled'] : route.view === 'projects' ? projectStatuses : taskStatuses; if (params.get('status')?.split(',').some(status => !allowedStatuses.includes(status))) params.delete('status'); }
   return route;
 }
 function routeUrl(path, updates = {}, keepFilters = true) {
@@ -118,7 +122,7 @@ function navigate(path, updates = {}, replace = false) {
 }
 function setFilter(name, value, replace = false) { navigate(store.route.path, { [name]: value, selected: null }, replace); }
 function mainPath() { return store.route.drawer ? store.route.params.get('context') || 'home' : store.route.path.replace(/^\//, ''); }
-function navigateView(view) { closePopover(false); closePalette(false); navigate(view, { context: null, note: null, doc: null, runlog: null, full: null, selected: null }); }
+function navigateView(view) { closePopover(false); closePalette(false); navigate(view, { status: null, priority: null, q: null, context: null, note: null, doc: null, runlog: null, full: null, selected: null }); }
 function focusLocator(control) {
   if (!control) return '';
   if (control.id) return `#${CSS.escape(control.id)}`;
@@ -170,7 +174,7 @@ function matchesFilters(entry) {
   if (params.get('status') && !params.get('status').split(',').includes(entry.status)) return false;
   if (params.get('priority') && params.get('priority') !== entry.priority) return false;
   if (params.get('project') && params.get('project') !== (entry.project || entry.id)) return false;
-  return !query || `${entry.title} ${entry.projectTitle || ''} ${entry.id} ${entry.statusReason || ''}`.toLowerCase().includes(query);
+  return !query || `${entry.body || ''} ${entry.title} ${entry.projectTitle || ''} ${entry.id} ${entry.statusReason || ''}`.toLowerCase().includes(query);
 }
 function compareTasks(first, second) { return priorityRank(first.priority) - priorityRank(second.priority) || (dayPattern.test(first.due || '') ? first.due : '9999').localeCompare(dayPattern.test(second.due || '') ? second.due : '9999') || String(second.lastActivity || '').localeCompare(String(first.lastActivity || '')) || first.id.localeCompare(second.id); }
 function compareProjects(first, second) { return priorityRank(first.priority) - priorityRank(second.priority) || String(first.deadline || '9999').localeCompare(String(second.deadline || '9999')) || first.title.localeCompare(second.title); }
@@ -215,6 +219,8 @@ function renderWeekStrip() {
 }
 function renderHome() {
   const tasks = store.data.tasks.filter(matchesFilters);
+  const overdue = tasks.filter(task => !closedStatuses.includes(task.status) && dayPattern.test(task.due || '') && task.due < today()).sort(compareTasks);
+  const inProgress = tasks.filter(task => task.status === 'doing' && !overdue.includes(task)).sort(compareTasks);
   const openTasks = tasks.filter(task => ['doing', 'todo'].includes(task.status)).sort((first, second) => (first.status === 'doing' ? 0 : 1) - (second.status === 'doing' ? 0 : 1) || compareTasks(first, second));
   const holds = [...store.data.projects.filter(project => ['paused', 'on-hold'].includes(project.status) && matchesFilters(project)), ...tasks.filter(task => task.status === 'blocked')];
   const dueSoon = [...tasks.filter(task => !closedStatuses.includes(task.status) && dayPattern.test(task.due || '') && task.due >= today() && task.due <= addDays(today(), 7)), ...store.data.projects.filter(project => !closedStatuses.includes(project.status) && dayPattern.test(project.deadline || '') && project.deadline >= today() && project.deadline <= addDays(today(), 7) && matchesFilters(project)).map(project => ({ ...project, type: 'project' }))].sort((first, second) => String(first.due || first.deadline).localeCompare(String(second.due || second.deadline)) || compareTasks(first, second));
@@ -222,8 +228,8 @@ function renderHome() {
   const failed = store.data.failed.filter(matchesFilters);
   const failureBanner = failed.length ? `<div class="banner">${icon('warning')}<div><strong>${failed.length} ${failed.length === 1 ? 'job needs' : 'jobs need'} attention</strong><p>${escapeHtml(failed.map(job => job.title).join(', '))}</p></div><button class="text-button" data-view="jobs">View jobs ${icon('right')}</button></div>` : '';
   const firstRun = !store.data.projects.length;
-  return pageHeading('Home', 'A little space for what needs you.', `<span class="heading-meta">${formatDate(today(), { weekday: 'long', year: 'numeric' })}</span>`) + failureBanner + renderWeekStrip() + (firstRun ? emptyState('A place to begin', 'Create a project with the CLI. Your open tasks will appear here.', 'projects', '<pre>2b new project first-project --area personal --title "First project"</pre>') :
-    section('Now', openTasks.length ? taskList(openTasks) : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Nothing needs action right now. Open a project to find your next task.</p>', openTasks.length, '<button class="text-button" data-view="projects">All projects ' + icon('right') + '</button>') +
+  return pageHeading('Home', 'A little space for what needs you.', `<span class="heading-meta">${formatDate(today(), { weekday: 'long', year: 'numeric' })}</span>`) + failureBanner + renderWeekStrip() + (firstRun ? emptyState('A place to begin', 'Create a project to give your tasks a home.', 'projects', creationButton('project', 'New project')) :
+    section('Overdue', overdue.length ? taskList(overdue) : '<p class="empty-inline">No overdue tasks.</p>', overdue.length) + section('In progress', inProgress.length ? taskList(inProgress) : '<p class="empty-inline">No tasks in progress.</p>', inProgress.length) + section('Next actions', openTasks.length ? taskList(openTasks.filter(task => task.status === 'todo' && !overdue.includes(task)).slice(0, 5)) : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Nothing needs action right now. Open a project to find your next task.</p>', openTasks.filter(task => task.status === 'todo' && !overdue.includes(task)).slice(0, 5).length, '<button class="text-button" data-view="projects">All projects ' + icon('right') + '</button>') +
     section('On hold', holds.length ? `<div class="hold-list">${holds.map(entry => `<div class="hold-row" data-row="${attribute(entry.id)}" tabindex="0">${statusChip(entry)}<div><button class="task-title" data-open="${attribute(entry.id)}">${escapeHtml(entry.title)}</button><p class="reason">${escapeHtml(entry.statusReason || 'No reason recorded.')}</p></div>${priorityChip(entry)}</div>`).join('')}</div>` : '<p class="empty-inline">No blocked tasks or paused projects.</p>', holds.length) +
     section('Due soon', dueSoon.length ? `<div class="task-list">${dueSoon.map(entry => taskRow(entry, entry.type === 'project')).join('')}</div>` : hasDates ? '<p class="empty-inline">Nothing due in the next 7 days.</p>' : '<p class="empty-inline">No due dates yet — press <kbd>d</kbd> on a task to set one.</p>', dueSoon.length, '<button class="text-button" data-view="due">See dates ' + icon('right') + '</button>'));
 }
@@ -257,7 +263,7 @@ function renderProjects() {
   const active = projects.filter(project => project.status === 'active');
   const holds = projects.filter(project => ['paused', 'on-hold'].includes(project.status));
   const done = projects.filter(project => closedStatuses.includes(project.status));
-  return pageHeading('Projects', 'The bigger picture, with room for the next step.', `<span class="heading-meta">${store.data.projects.length} projects</span>`) + (!projects.length ? hasFilters() ? emptyFiltered() : emptyState('Your first project starts here', 'Create a project to give related tasks a home.', 'projects', '<pre>2b new project first-project --area personal --title "First project"</pre>') :
+  return pageHeading('Projects', 'The bigger picture, with room for the next step.', `${creationButton('project', 'New project')}`) + (!projects.length ? hasFilters() ? emptyFiltered() : emptyState('Your first project starts here', 'Create a project to give related tasks a home.', 'projects', creationButton('project', 'New project')) :
     (active.length ? section('Active', renderProjectTable(active, sort, descending), active.length) : '') + (holds.length ? section('On hold', renderProjectTable(holds, sort, descending), holds.length) : '') + (done.length ? `<details class="section" data-url-details="done" ${store.route.params.get('done') === '1' ? 'open' : ''}><summary>Done <span class="count">${done.length}</span></summary>${renderProjectTable(done, sort, descending)}</details>` : ''));
 }
 function renderDescription(entry) {
@@ -303,10 +309,24 @@ function renderProjectPage() {
     if (closedStatuses.includes(status)) return `<details class="section" data-url-details="tasks-${status}" ${store.route.params.get(`tasks-${status}`) === '1' ? 'open' : ''}><summary>${status === 'done' ? 'Done' : 'Dropped'} <span class="count">${items.length}</span></summary>${taskList(items)}</details>`;
     return section(({ doing: 'In progress', todo: 'To do', blocked: 'Blocked', paused: 'Paused' })[status], taskList(items), items.length);
   }).join('');
-  return pageHeading(project.title, '', `<button class="text-button" data-view="projects">${icon('left')} All projects</button>`) + metadata + renderDescription(entry) + section('Collections', contentList(entry.collections || []), entry.collections?.length || 0, creationButton('collection', 'New collection', id)) + section('Tasks', groups || (hasFilters() ? emptyFiltered() : '<p class="empty-inline">No tasks yet. Add one with <code>2b new task ' + escapeHtml(id) + ' task-slug --title "Task title"</code>.</p>'), tasks.length) + renderLinks(entry) + section('Recent activity', renderRecentEvents(entry.recentEvents), entry.recentEvents?.length || 0);
+  return pageHeading(project.title, '', `<button class="text-button" data-view="projects">${icon('left')} All projects</button>`) + metadata + renderDescription(entry) + section('Collections', contentList(entry.collections || []), entry.collections?.length || 0, creationButton('collection', 'New collection', id)) + section('Tasks', groups || (hasFilters() ? emptyFiltered() : '<p class="empty-inline">No tasks yet. Add one with <code>2b new task ' + escapeHtml(id) + ' task-slug --title "Task title"</code>.</p>'), tasks.length, creationButton('task', 'New task', id)) + renderLinks(entry) + section('Recent activity', renderRecentEvents(entry.recentEvents), entry.recentEvents?.length || 0);
 }
 function contentList(entries) {
   return entries.length ? `<ul class="link-list">${entries.map(entry => `<li><button class="text-button" data-open="${attribute(entry.id)}">${icon(entry.type === 'collection' ? 'collections' : 'file')}${escapeHtml(entry.title)}</button>${entry['note-type'] ? ` <span class="count">${escapeHtml(entry['note-type'])}</span>` : ''}</li>`).join('')}</ul>` : '<p class="empty-inline">No content yet.</p>';
+}
+function captureForm(kind, selectedProject) {
+  const destination = kind === 'capture' ? '<label>Save to<select name="folder"><option value="inbox">Inbox</option><option value="learnings">Learnings</option></select></label>' : kind === 'project' ? '<label>Area<select name="area"><option value="personal">Personal</option><option value="work">Work</option></select></label>' : `<label>Project<select name="project" required>${store.data.projects.map(project => `<option value="${attribute(project.id)}" ${project.id === selectedProject ? 'selected' : ''}>${escapeHtml(project.title)}</option>`).join('')}</select></label>`;
+  return `<form id="${kind}-form" class="v2-form">${destination}<label>Title<input name="title" required maxlength="200"></label><label>Description<textarea name="body" required rows="5"></textarea></label>${kind === 'job' ? '<label>Schedule<input name="every" required placeholder="weekdays 09:00"></label><p class="count">Uses this Mac’s local time zone. Runs Codex with the description as its instruction. Advanced schedules: daily 19:00, mon,fri 10:00, or hourly.</p>' : ''}<button type="submit" class="primary-button">Create ${kind}</button></form>`;
+}
+function updateRepeatControls(form) {
+  const repeating = form.elements['reminder-mode'].value === 'repeat';
+  const kind = form.elements['repeat-kind'].value;
+  for (const [selector, visible] of [['[data-repeat-time]', kind !== 'hourly' && kind !== 'custom'], ['[data-repeat-custom]', kind === 'custom']]) {
+    const field = form.querySelector(selector);
+    field.hidden = !visible;
+    field.querySelector('input').disabled = !repeating || !visible;
+    field.querySelector('input').required = repeating && visible;
+  }
 }
 function collectionForm(selectedProject = '') {
   return `<form id="collection-form" class="v2-form"><label>Project<select name="project" required>${store.data.projects.map(project => `<option value="${attribute(project.id)}" ${project.id === selectedProject ? 'selected' : ''}>${escapeHtml(project.title)}</option>`).join('')}</select></label><label>Title<input name="title" required maxlength="200"></label><label>Description<textarea name="body" required></textarea></label><button type="submit" class="primary-button">Create collection</button></form>`;
@@ -319,16 +339,16 @@ function creationButton(kind, label, project = '') {
 }
 function renderCollections() {
   if (!store.data.projects.length) return pageHeading('Collections', 'Notes and files, grouped within your projects.') + emptyState('Create a project first', 'Each collection belongs to a project. Create one with the CLI.', 'collections');
-  const collections = store.data.collections.filter(matchesFilters);
+  const collections = store.data.collections.filter(collection => matchesFilters(collection) || store.data.notes.some(note => note.collection === collection.id && matchesFilters(note)));
   const actions = `<div class="creation-actions">${creationButton('collection', 'New collection')}${store.data.collections.length ? creationButton('note', 'New note') : ''}</div>`;
   return pageHeading('Collections', 'Notes and files, grouped within your projects.', actions) +
-    section('Collections', collections.length ? collections.map(collection => section(collection.title, `<p class="count">${escapeHtml(collection.project)}</p>${contentList([collection, ...store.data.notes.filter(note => note.collection === collection.id)])}`)).join('') : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Create a collection to start saving notes.</p>', collections.length);
+    section('Collections', collections.length ? collections.map(collection => section(collection.title, `<p class="count">${escapeHtml(collection.project)}</p>${contentList([collection, ...store.data.notes.filter(note => note.collection === collection.id && (!store.route.params.get('q') || matchesFilters(note)))])}`)).join('') : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Create a collection to start saving notes.</p>', collections.length);
 }
 function reminderDate(reminder, value) {
   return value ? new Intl.DateTimeFormat(undefined, { timeZone: reminder.timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
 }
 function reminderForm() {
-  return `<form id="reminder-form" class="v2-form"><label>Message<input name="message" required maxlength="1000"></label><label>Schedule<select name="reminder-mode"><option value="once">One time</option><option value="repeat">Repeating</option></select></label><label data-schedule-field="once">Date and time<input name="at" type="datetime-local" required></label><label data-schedule-field="repeat" hidden>Repeat schedule<input name="every" placeholder="daily 19:00" disabled></label><p data-schedule-field="repeat" class="count" hidden>Use daily 19:00, weekdays 09:00, mon,fri 10:00, or hourly.</p><label>Time zone<input name="timezone" required value="${attribute(Intl.DateTimeFormat().resolvedOptions().timeZone)}"></label><details class="creation-options"><summary>Link to a project or task (optional)</summary><label>Project (optional)<select name="project"><option value="">Outside projects</option>${store.data.projects.map(project => `<option value="${attribute(project.id)}">${escapeHtml(project.title)}</option>`).join('')}</select></label><label>Task (optional)<select name="task"><option value="">No task</option>${store.data.tasks.map(task => `<option value="${attribute(task.id)}">${escapeHtml(task.title)} · ${escapeHtml(task.project)}</option>`).join('')}</select></label></details><button type="submit" class="primary-button">Add reminder</button></form>`;
+  return `<form id="reminder-form" class="v2-form"><label>Message<input name="message" required maxlength="1000"></label><label>Schedule<select name="reminder-mode"><option value="once">One time</option><option value="repeat">Repeating</option></select></label><label data-schedule-field="once">Date and time<input name="at" type="datetime-local" required></label><div data-schedule-field="repeat" hidden><label>Repeat<select name="repeat-kind" disabled><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="mon">Every Monday</option><option value="fri">Every Friday</option><option value="hourly">Every hour</option><option value="custom">Advanced schedule</option></select></label><label data-repeat-time>Time<input name="repeat-time" type="time" value="09:00" disabled></label><label data-repeat-custom hidden>Schedule syntax<input name="every" placeholder="mon,fri 10:00" disabled></label></div><p class="count">Delivery uses the saved time zone. Notifications can arrive about one minute late. Missed reminders arrive when this Mac can run.</p><label>Time zone<input name="timezone" required value="${attribute(Intl.DateTimeFormat().resolvedOptions().timeZone)}"></label><details class="creation-options"><summary>Link to a project or task (optional)</summary><label>Project (optional)<select name="project"><option value="">Outside projects</option>${store.data.projects.map(project => `<option value="${attribute(project.id)}">${escapeHtml(project.title)}</option>`).join('')}</select></label><label>Task (optional)<select name="task"><option value="">No task</option>${store.data.tasks.map(task => `<option value="${attribute(task.id)}">${escapeHtml(task.title)} · ${escapeHtml(task.project)}</option>`).join('')}</select></label></details><button type="submit" class="primary-button">Add reminder</button></form>`;
 }
 function renderReminders() {
   const reminders = store.data.reminders.filter(reminder => {
@@ -345,13 +365,14 @@ function renderReminders() {
     }).join('');
 }
 let creationOpener = null;
+const creationDrafts = new Map();
 function openCreationDialog(kind, opener) {
   closePopover(false);
   closePalette(false);
   const dialog = element('creation-dialog');
   const project = opener?.dataset.project || store.route.params.get('project') || '';
-  const title = { collection: 'New collection', note: 'New note', reminder: 'New reminder' }[kind];
-  const form = kind === 'collection' ? collectionForm(project) : kind === 'note' ? noteForm() : reminderForm();
+  const title = { project: 'New project', task: 'New task', capture: 'Capture note', job: 'New job', collection: 'New collection', note: 'New note', reminder: 'New reminder' }[kind];
+  const form = ['project', 'task', 'capture', 'job'].includes(kind) ? captureForm(kind, project) : kind === 'collection' ? collectionForm(project) : kind === 'note' ? noteForm() : reminderForm();
   creationOpener = { element: opener, action: opener?.dataset.action, project: opener?.dataset.project };
   dialog.innerHTML = `<header class="creation-dialog-header"><h2 id="creation-dialog-title">${title}</h2><button type="button" class="icon-button" data-action="close-creation" aria-label="Close ${title.toLowerCase()}">${icon('close')}</button></header>${form}`;
   const formElement = dialog.querySelector('form');
@@ -366,12 +387,16 @@ function openCreationDialog(kind, opener) {
   error.setAttribute('role', 'alert');
   error.tabIndex = -1;
   formElement.append(error, footer);
+  dialog.dataset.kind = kind;
+  for (const [name, value] of creationDrafts.get(kind) || []) { const control = formElement.elements.namedItem(name); if (control) control.value = value; }
+  if (kind === 'reminder') { formElement.querySelector('[name="reminder-mode"]').dispatchEvent(new Event('change', { bubbles: true })); }
   dialog.showModal();
   formElement.querySelector(kind === 'reminder' ? '[name="message"]' : '[name="title"]').focus();
 }
 function closeCreationDialog() {
   const dialog = element('creation-dialog');
   if (!dialog.open) return;
+  creationDrafts.set(dialog.dataset.kind, [...new FormData(dialog.querySelector('form'))]);
   dialog.close();
   const opener = creationOpener;
   const replacement = opener?.action ? [...document.querySelectorAll(`[data-action="${opener.action}"]`)].find(button => !opener.project || button.dataset.project === opener.project) : null;
@@ -381,9 +406,10 @@ async function saveV2Form(form) {
   const button = form.querySelector('[type="submit"]');
   if (button.disabled) return;
   const values = Object.fromEntries([...new FormData(form)].filter(([, value]) => String(value).trim()));
-  delete values['reminder-mode'];
+  if (values['reminder-mode'] === 'repeat' && values['repeat-kind'] !== 'custom') values.every = values['repeat-kind'] === 'hourly' ? 'hourly' : `${values['repeat-kind']} ${values['repeat-time']}`;
+  for (const key of ['reminder-mode', 'repeat-kind', 'repeat-time']) delete values[key];
   values.slug = slugify(values.title || values.message) + '-' + Date.now().toString(36);
-  const route = ({ 'collection-form': 'collection', 'note-form': 'note', 'reminder-form': 'reminder' })[form.id];
+  const route = ({ 'capture-form': 'capture', 'job-form': 'task', 'project-form': 'project', 'task-form': 'task', 'collection-form': 'collection', 'note-form': 'note', 'reminder-form': 'reminder' })[form.id];
   if (route === 'reminder' && Boolean(values.at) === Boolean(values.every)) { form.querySelector('.creation-error').textContent = 'Set either a date and time or a repeat schedule.'; return; }
   form.querySelector('.creation-error').textContent = '';
   button.disabled = true;
@@ -393,8 +419,10 @@ async function saveV2Form(form) {
   try {
     const result = await api.post('/api/' + route, values);
     if (element('creation-dialog').contains(form)) closeCreationDialog();
+    creationDrafts.delete(element('creation-dialog').dataset.kind);
+    if (route === 'capture') store.notes = null;
     await loadState({ force: true });
-    showToast(result.warnings?.length ? 'Saved. Scheduling needs attention: ' + result.warnings.join('; ') : 'Saved.');
+    showToast(result.warnings?.length ? 'Saved. Scheduling needs attention: ' + result.warnings.join('; ') : `${route[0].toUpperCase() + route.slice(1)} saved.`);
   } catch (error) {
     const message = form.querySelector('.creation-error');
     if (form.isConnected) { message.textContent = error.message; message.focus(); }
@@ -510,22 +538,22 @@ function runLogPath(job, file) {
 }
 function renderJobs() {
   const jobs = store.data.jobs.filter(job => matchesFilters({ ...job, area: store.data.projects.find(project => project.id === job.project)?.area })).sort(compareTasks);
-  if (!jobs.length) return pageHeading('Jobs', 'Recurring work, with a clear record of each run.', store.data.trash ? `<button class="secondary-button" data-popover="trash">${icon('trash')}Trash (${store.data.trash})</button>` : '') + (hasFilters() ? emptyFiltered() : emptyState('Let the routine take care of itself', 'Create a recurring task with a schedule and a full instruction. It will appear here with its next run and history.', 'jobs', '<pre>2b new task &lt;project&gt; &lt;slug&gt; --title "&lt;title&gt;" --every "daily 19:00" --run agent --body "&lt;instruction&gt;"</pre><p>For example:</p><pre>2b new task personal evening-review --title "Evening review" --every "daily 19:00" --run agent --body "Review today’s activity and write a short summary."</pre>'));
-  return pageHeading('Jobs', 'Recurring work, with a clear record of each run.', `<div class="job-actions"><button class="secondary-button" data-action="reload">${icon('restore')}Refresh</button><button class="secondary-button" data-popover="trash">${icon('trash')}Trash${store.data.trash ? ` (${store.data.trash})` : ''}</button></div>`) + `<div class="table-scroll"><table><thead><tr>${['Name', 'Schedule', 'Next run', 'Loaded in launchd', 'Last run', 'History', 'Status', 'Actions'].map(title => `<th scope="col">${title}</th>`).join('')}</tr></thead><tbody>${jobs.map(job => {
+  if (!jobs.length) return pageHeading('Jobs', 'Recurring work, with a clear record of each run.', creationButton('job', 'New job') + store.data.trash ? `<button class="secondary-button" data-popover="trash">${icon('trash')}Trash (${store.data.trash})</button>` : '') + (hasFilters() ? emptyFiltered() : emptyState('Let the routine take care of itself', 'Create a recurring task with a schedule and a full instruction. It will appear here with its next run and history.', 'jobs', '<pre>2b new task &lt;project&gt; &lt;slug&gt; --title "&lt;title&gt;" --every "daily 19:00" --run agent --body "&lt;instruction&gt;"</pre><p>For example:</p><pre>2b new task personal evening-review --title "Evening review" --every "daily 19:00" --run agent --body "Review today’s activity and write a short summary."</pre>'));
+  return pageHeading('Jobs', 'Recurring work, with a clear record of each run.', creationButton('job', 'New job') + `<div class="job-actions"><button class="secondary-button" data-action="reload">${icon('restore')}Refresh</button><button class="secondary-button" data-popover="trash">${icon('trash')}Trash${store.data.trash ? ` (${store.data.trash})` : ''}</button></div>`) + `<div class="table-scroll"><table><thead><tr>${['Name', 'Schedule', 'Next run', 'Schedule service', 'Last run', 'History', 'Status', 'Actions'].map(title => `<th scope="col">${title}</th>`).join('')}</tr></thead><tbody>${jobs.map(job => {
     const entry = getEntry(job.id) || job;
     const failed = job.lastResult === 'error';
     const resultLabel = job.lastResult === 'ok' ? 'Passed' : failed ? 'Failed' : 'Not run';
     const paused = ['paused', 'blocked', 'on-hold'].includes(job.status);
-    return `<tr class="table-row" data-row="${attribute(job.id)}" tabindex="0"><td class="project-name-cell"><button class="project-title" data-open="${attribute(job.id)}">${escapeHtml(job.title)}</button><p class="count">${escapeHtml(store.data.projects.find(project => project.id === job.project)?.title || job.project)}</p>${entry.statusReason ? `<p class="reason">${escapeHtml(entry.statusReason)}</p>` : ''}</td><td>${escapeHtml(job.schedule || job.every)}</td><td class="numeric" title="${attribute(job.nextRun || '')}">${job.nextRun ? escapeHtml(relativeTime(job.nextRun)) : 'Paused'}</td><td><span class="result">${icon(job.loaded ? 'check' : 'circle')}${job.loaded ? 'Yes' : 'No'}</span></td><td><button class="text-button" ${job.lastLog ? `data-runlog="${attribute(runLogPath(job, job.lastLog))}" data-id="${attribute(job.id)}"` : 'disabled'}>${escapeHtml(formatTimestamp(job.lastRun))}</button><br><span class="result ${failed ? 'error' : job.lastResult === 'ok' ? 'ok' : ''}">${icon(failed ? 'warning' : job.lastResult === 'ok' ? 'check' : 'circle')}${resultLabel}</span></td><td><div class="history-dots">${(job.runs || []).slice(0, 10).map(run => `<button class="history-dot ${run.ok === true ? 'ok' : run.ok === false ? 'error' : ''}" data-runlog="${attribute(runLogPath(job, run.file))}" data-id="${attribute(job.id)}" aria-label="${attribute(formatTimestamp(run.at))}: ${run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unknown result'}"><span></span></button>`).join('') || '<span class="count">No runs</span>'}</div></td><td>${statusChip(entry)}</td><td><div class="job-actions"><button class="secondary-button" data-action="run" data-id="${attribute(job.id)}" ${store.runningJobs.has(job.id) ? 'disabled' : ''}>${icon('play')}${store.runningJobs.get(job.id) || 'Run now'}</button><button class="icon-button" aria-label="${paused ? 'Resume' : 'Pause'} ${attribute(job.title)}" ${paused ? 'data-action="resume"' : 'data-popover="pause"'} data-id="${attribute(job.id)}">${icon(paused ? 'play' : 'pause')}</button><button class="icon-button" aria-label="Delete ${attribute(job.title)}" data-popover="delete" ${store.runningJobs.has(job.id) ? 'disabled' : ''} data-id="${attribute(job.id)}">${icon('trash')}</button></div></td></tr>`;
+    return `<tr class="table-row" data-row="${attribute(job.id)}" tabindex="0"><td class="project-name-cell"><button class="project-title" data-open="${attribute(job.id)}">${escapeHtml(job.title)}</button><p class="count">${escapeHtml(store.data.projects.find(project => project.id === job.project)?.title || job.project)}</p>${entry.statusReason ? `<p class="reason">${escapeHtml(entry.statusReason)}</p>` : ''}</td><td>${escapeHtml(job.schedule || job.every)}</td><td class="numeric" title="${attribute(job.nextRun || '')}">${job.nextRun ? escapeHtml(relativeTime(job.nextRun)) : 'Paused'}</td><td><span class="result">${icon(job.loaded ? 'check' : 'circle')}${job.loaded ? 'Ready' : paused ? 'Paused' : 'Not registered'}</span></td><td><button class="text-button" ${job.lastLog ? `data-runlog="${attribute(runLogPath(job, job.lastLog))}" data-id="${attribute(job.id)}"` : 'disabled'}>${escapeHtml(formatTimestamp(job.lastRun))}</button><br><span class="result ${failed ? 'error' : job.lastResult === 'ok' ? 'ok' : ''}">${icon(failed ? 'warning' : job.lastResult === 'ok' ? 'check' : 'circle')}${resultLabel}</span></td><td><div class="history-dots">${(job.runs || []).slice(0, 10).map(run => `<button class="history-dot ${run.ok === true ? 'ok' : run.ok === false ? 'error' : ''}" data-runlog="${attribute(runLogPath(job, run.file))}" data-id="${attribute(job.id)}" aria-label="${attribute(formatTimestamp(run.at))}: ${run.ok === true ? 'passed' : run.ok === false ? 'failed' : 'unknown result'}"><span></span></button>`).join('') || '<span class="count">No runs</span>'}</div></td><td>${statusChip(entry)}</td><td><div class="job-actions"><button class="secondary-button" data-action="run" data-id="${attribute(job.id)}" ${store.runningJobs.has(job.id) ? 'disabled' : ''}>${icon('play')}${store.runningJobs.get(job.id) || 'Run now'}</button><button class="icon-button" aria-label="${paused ? 'Resume' : 'Pause'} ${attribute(job.title)}" ${paused ? 'data-action="resume"' : 'data-popover="pause"'} data-id="${attribute(job.id)}">${icon(paused ? 'play' : 'pause')}</button><button class="icon-button" aria-label="Delete ${attribute(job.title)}" data-popover="delete" ${store.runningJobs.has(job.id) ? 'disabled' : ''} data-id="${attribute(job.id)}">${icon('trash')}</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 function renderInbox() {
-  if (!store.notes && !store.notesError) { loadInbox(); return pageHeading('Inbox', 'Small thoughts, ready when you are.') + skeletonRows(); }
+  if (!store.notes && !store.notesError) { loadInbox(); return pageHeading('Inbox', 'Small thoughts, ready when you are.', creationButton('capture', 'Capture note')) + skeletonRows(); }
   if (store.notesError) return pageHeading('Inbox', '') + `<div class="banner" role="alert">${icon('warning')}${escapeHtml(store.notesError)}<button data-action="reload-inbox">Try again</button></div>`;
   const query = (store.route.params.get('q') || '').toLowerCase();
   const folder = store.route.params.get('folder') || '';
-  const notes = store.notes.filter(note => (!folder || note.folder === folder) && (!query || `${note.title} ${note.path}`.toLowerCase().includes(query)));
-  return pageHeading('Inbox', 'Small thoughts, ready when you are.') + `<div class="segmented" aria-label="Note folder">${[['', 'All notes'], ['inbox', 'Inbox'], ['learnings', 'Learnings']].map(([value, label]) => `<button data-filter="folder" data-value="${value}" aria-pressed="${folder === value}">${label}</button>`).join('')}</div>` + (!notes.length ? query || folder ? emptyFiltered() : emptyState('A clear inbox', 'Capture a thought with the CLI. Open a note here to turn it into a task.', 'inbox', '<pre>2b dump a-thought --title "A thought to keep"</pre>') : `<section class="section" aria-label="Notes">${notes.map(note => `<div class="inbox-row" data-note-row="${attribute(note.path)}" tabindex="0">${icon(note.folder === 'learnings' ? 'file' : 'inbox')}<div class="inbox-copy"><button data-note="${attribute(note.path)}">${escapeHtml(note.title)}</button><p>${escapeHtml(note.folder)} · ${note.created ? escapeHtml(formatTimestamp(note.created)) : 'Date not recorded'}</p></div><button class="icon-button" data-convert="${attribute(note.path)}" aria-label="Turn ${attribute(note.title)} into a task">${icon('arrow')}</button></div>`).join('')}</section>`);
+  const notes = store.notes.filter(note => (!folder || note.folder === folder) && (!query || `${note.title} ${note.path} ${note.body || ''}`.toLowerCase().includes(query)));
+  return pageHeading('Inbox', 'Small thoughts, ready when you are.', creationButton('capture', 'Capture note')) + `<div class="segmented" aria-label="Note folder">${[['', 'All notes'], ['inbox', 'Inbox'], ['learnings', 'Learnings']].map(([value, label]) => `<button data-filter="folder" data-value="${value}" aria-pressed="${folder === value}">${label}</button>`).join('')}</div>` + (!notes.length ? query || folder ? emptyFiltered() : emptyState('A clear inbox', 'Capture a thought with the CLI. Open a note here to turn it into a task.', 'inbox', '<pre>2b dump a-thought --title "A thought to keep"</pre>') : `<section class="section" aria-label="Notes">${notes.map(note => `<div class="inbox-row" data-note-row="${attribute(note.path)}" tabindex="0">${icon(note.folder === 'learnings' ? 'file' : 'inbox')}<div class="inbox-copy"><button data-note="${attribute(note.path)}">${escapeHtml(note.title)}</button><p>${escapeHtml(note.folder)} · ${note.created ? escapeHtml(formatTimestamp(note.created)) : 'Date not recorded'}</p></div><button class="icon-button" data-convert="${attribute(note.path)}" aria-label="Turn ${attribute(note.title)} into a task">${icon('arrow')}</button></div>`).join('')}</section>`);
 }
 function renderNavigation() {
   const current = store.route.view === 'project' ? 'projects' : store.route.view;
@@ -541,7 +569,10 @@ function renderNavigation() {
 function renderTopbar() {
   const params = store.route.params;
   const status = params.get('status');
-  element('topbar').innerHTML = `<div class="segmented" aria-label="Area">${[['', 'All'], ['work', 'Work'], ['personal', 'Personal']].map(([value, label]) => `<button data-filter="area" data-value="${value}" aria-pressed="${(params.get('area') || '') === value}">${label}</button>`).join('')}</div><div class="filter-group"><button class="filter-button ${status ? 'active' : ''}" data-popover="status-filter" aria-haspopup="dialog">${icon('filter')}${status ? escapeHtml(status.split(',').join(', ')) : 'Status'}${icon('chevron')}</button><button class="filter-button ${params.get('priority') ? 'active' : ''}" data-popover="priority-filter" aria-haspopup="dialog">${icon('priority')}${escapeHtml(params.get('priority') || 'Priority')}${icon('chevron')}</button></div><div class="search-wrap">${icon('search')}<input id="global-search" type="search" placeholder="Search anything" aria-label="Search dashboard" value="${attribute(params.get('q') || '')}" autocomplete="off"><kbd>/</kbd></div><button class="command-button" data-action="palette" aria-label="Command palette" title="Command palette (Command K)">${icon('command')}<span>K</span></button>`;
+  element('topbar').innerHTML = `<div class="segmented" aria-label="Area">${[['', 'All'], ['work', 'Work'], ['personal', 'Personal']].map(([value, label]) => `<button data-filter="area" data-value="${value}" aria-pressed="${(params.get('area') || '') === value}">${label}</button>`).join('')}</div><div class="filter-group"><button class="filter-button ${status ? 'active' : ''}" data-popover="status-filter" aria-haspopup="dialog">${icon('filter')}${status ? escapeHtml(status.split(',').join(', ')) : 'Status'}${icon('chevron')}</button><button class="filter-button ${params.get('priority') ? 'active' : ''}" data-popover="priority-filter" aria-haspopup="dialog">${icon('priority')}${escapeHtml(params.get('priority') || 'Priority')}${icon('chevron')}</button></div><div class="search-wrap">${icon('search')}<input id="global-search" type="search" placeholder="Search ${store.route.view === 'collections' ? 'collections and note content' : store.route.view}" aria-label="Search ${store.route.view}" value="${attribute(params.get('q') || '')}" autocomplete="off"><kbd>/</kbd></div><button class="command-button" data-action="palette" aria-label="Command palette" title="Command palette (Command K)">${icon('command')}<span>K</span></button>`;
+  const supported = supportedFilters(store.route.view);
+  if (!supported.includes('area')) element('topbar').querySelector('[aria-label="Area"]').remove();
+  for (const name of ['status', 'priority']) if (!supported.includes(name)) element('topbar').querySelector(`[data-popover="${name}-filter"]`).remove();
 }
 function render() {
   const active = document.activeElement;
@@ -1140,6 +1171,10 @@ async function copyText(text) {
   catch { showToast('Copy is unavailable. Select the instruction and copy it.'); }
 }
 const clickActions = {
+  'new-capture': control => openCreationDialog('capture', control),
+  'new-job': control => openCreationDialog('job', control),
+  'new-project': control => openCreationDialog('project', control),
+  'new-task': control => openCreationDialog('task', control),
   'new-collection': control => openCreationDialog('collection', control),
   'new-note': control => openCreationDialog('note', control),
   'new-reminder': control => openCreationDialog('reminder', control),
@@ -1208,16 +1243,16 @@ document.addEventListener('change', event => {
     const mode = event.target.value;
     event.target.form.querySelectorAll('[data-schedule-field]').forEach(field => {
       field.hidden = field.dataset.scheduleField !== mode;
-      const input = field.querySelector('input');
-      if (input) { input.disabled = field.hidden; input.required = !field.hidden; }
+      field.querySelectorAll('input, select').forEach(input => { input.disabled = field.hidden; input.required = !field.hidden; });
     });
   }
+  if (event.target.name === 'repeat-kind' || event.target.name === 'reminder-mode') updateRepeatControls(event.target.form);
   if (event.target.dataset.query) setFilter(event.target.dataset.query, event.target.value);
 });
 document.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.target;
-  if (['collection-form', 'note-form', 'reminder-form'].includes(form.id)) { saveV2Form(form); return; }
+  if (['capture-form', 'job-form', 'project-form', 'task-form', 'collection-form', 'note-form', 'reminder-form'].includes(form.id)) { saveV2Form(form); return; }
   const values = new FormData(form);
   if (form.id === 'reason-form') {
     const reason = String(values.get('reason')).trim();
