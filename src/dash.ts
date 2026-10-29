@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   NODE_COMMAND, UserError, CLOSED_STATUSES, PRIORITY_LABELS, addDays, appendLog, assertDay, assertSlug,
-  createTask, createCollection, createCollectionNote, listCollections, listNotes, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
+  createNote, createProject, createTask, createCollection, createCollectionNote, listCollections, listNotes, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
   setField, setStatus, withStoreReadCache, type Entry, type Artifact,
 } from './store.ts';
 import { createReminder, listReminders, cancelReminder, reminderDir } from './reminders.ts';
@@ -26,7 +26,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml', '.gif': 'image/gif', '.webp': 'image/webp',
   '.pdf': 'application/pdf',
 };
-const flatten = (entry: Entry) => ({ ...entry.fields, id: entry.id, type: entry.kind, project: entry.project });
+const flatten = (entry: Entry) => ({ ...entry.fields, id: entry.id, type: entry.kind, project: entry.project, body: entry.body });
 const readLog = (entry: Entry) => {
   const file = path.join(entry.dir, 'log.md');
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
@@ -311,7 +311,7 @@ function inboxNotes(root: string) {
         const relative = path.join(folder, file);
         const { fields, body } = parse(fs.readFileSync(storeFile(root, relative), 'utf8'));
         return [{ path: relative, folder, title: String(fields.title ?? body.match(/^# (.+)$/m)?.[1] ?? path.basename(file, '.md')),
-          created: String(fields.created ?? '') }];
+          body, created: String(fields.created ?? '') }];
       } catch { return []; }
     });
   }).sort((first, second) => second.created.localeCompare(first.created) || first.path.localeCompare(second.path));
@@ -371,7 +371,9 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
     '/api/reminder/cancel': ['id'],
     '/api/collection': ['project', 'slug', 'title', 'body'],
     '/api/note': ['collection', 'slug', 'title', 'body', 'type', 'source'],
-    '/api/task': ['project', 'slug', 'title', 'body', 'fromNote'],
+    '/api/project': ['slug', 'title', 'body', 'area'],
+    '/api/capture': ['folder', 'slug', 'title', 'body'],
+    '/api/task': ['project', 'slug', 'title', 'body', 'fromNote', 'every'],
   };
   if (!allowed[route]) throw new ApiError(404, 'not found');
   if (Object.keys(body).some(key => !allowed[route].includes(key))) throw new ApiError(400, 'unknown field');
@@ -387,6 +389,21 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
     } else reminder = cancelReminder(root, textField(body, 'id')!);
     const warnings = syncSchedules(root, options).failed.map(failure => failure.reason);
     return { ok: true, reminder, warnings };
+  }
+  if (route === '/api/capture') {
+    const folder = textField(body, 'folder')!;
+    if (folder !== 'inbox' && folder !== 'learnings') throw new ApiError(400, 'folder must be inbox or learnings');
+    assertEntryPaths(root, path.join(root, folder, ...(folder === 'learnings' ? [localDate().slice(0, 7)] : [])));
+    const content = textField(body, 'body', true) || '';
+    const file = createNote(root, folder, textField(body, 'slug')!, textField(body, 'title')!);
+    fs.appendFileSync(file, '\n' + content + '\n');
+    return { ok: true, path: path.relative(root, file) };
+  }
+  if (route === '/api/project') {
+    const slug = textField(body, 'slug')!;
+    assertSlug(slug, 'project');
+    assertEntryPaths(root, path.join(root, 'projects', slug));
+    return { ok: true, entry: flatten(createProject(root, slug, { area: textField(body, 'area')!, title: textField(body, 'title')!, body: textField(body, 'body', true) })) };
   }
   if (route === '/api/collection') {
     const project = findEntry(root, textField(body, 'project')!);
@@ -431,9 +448,10 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
       if (!['inbox', 'learnings'].some(folder => realFile.startsWith(path.join(realRoot, folder) + path.sep))) throw new ApiError(404, 'not found');
       description = parse(fs.readFileSync(file, 'utf8')).body;
     }
-    const task = createTask(root, project.id, slug, { title, body: description });
+    const task = createTask(root, project.id, slug, { title, body: description, every: textField(body, 'every', true) });
+    const warnings = body.every ? syncSchedules(root, options).failed.map(failure => failure.reason) : [];
     if (fromNote !== undefined) appendLog(task.dir, 'from note', fromNote);
-    return { ok: true, entry: flatten(task) };
+    return { ok: true, entry: flatten(task), warnings };
   }
   const entry = findEntry(root, textField(body, 'id')!);
   if (route === '/api/status') {

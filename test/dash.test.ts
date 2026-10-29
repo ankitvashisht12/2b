@@ -514,3 +514,14 @@ test('openDashboard refuses a port owned by another store', async context => {
   const port = (server.address() as AddressInfo).port;
   await assert.rejects(openDashboard(root, port), { message: `port ${port} is used by another 2b store or program` });
 });
+
+test('dashboard capture adapters preserve content and reject invalid destinations', async context => {
+  const { post, get } = await fixture(context);
+  assert.equal((await post('/api/project', { slug: 'direct', title: 'Direct capture', area: 'personal', body: 'Project context' })).status, 200);
+  assert.equal((await post('/api/capture', { slug: 'thought', title: 'A thought', folder: 'inbox', body: 'Body-only lighthouse keyword' })).status, 200);
+  const inbox = await (await get('/api/inbox')).json();
+  assert.match(inbox.notes.find((note: any) => note.title === 'A thought').body, /lighthouse/);
+  assert.equal((await post('/api/capture', { slug: 'unsafe', title: 'Unsafe', folder: '../projects', body: 'No write' })).status, 400);
+  assert.equal((await post('/api/project', { slug: '../unsafe', title: 'Unsafe', area: 'personal' })).status, 400);
+  assert.equal((await post('/api/task', { project: 'direct', slug: 'direct-task', title: 'Direct task', body: 'Task context' })).status, 200);
+});
