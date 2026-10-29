@@ -10,7 +10,7 @@ import {
 import { createReminder, listReminders, cancelReminder, reminderDir } from './reminders.ts';
 import { isoWeek, readAllEvents } from './week.ts';
 import { formatRules, rulesFor } from './rules.ts';
-import { jobsOverview, syncSchedules } from './schedule.ts';
+import { jobsOverview, syncSchedules, parseEvery } from './schedule.ts';
 import { listTrash, restoreTask, trashTask } from './trash.ts';
 import { renderMarkdown } from './markdown.ts';
 import { parse } from './frontmatter.ts';
@@ -393,7 +393,10 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
   if (route === '/api/capture') {
     const folder = textField(body, 'folder')!;
     if (folder !== 'inbox' && folder !== 'learnings') throw new ApiError(400, 'folder must be inbox or learnings');
-    assertEntryPaths(root, path.join(root, folder, ...(folder === 'learnings' ? [localDate().slice(0, 7)] : [])));
+    const slug = textField(body, 'slug')!;
+    assertSlug(slug, 'note');
+    const directory = path.join(root, folder, ...(folder === 'learnings' ? [localDate().slice(0, 7)] : []));
+    assertInsideStore(root, path.join(directory, `${localDate()}-${slug}.md`));
     const content = textField(body, 'body', true) || '';
     const file = createNote(root, folder, textField(body, 'slug')!, textField(body, 'title')!);
     fs.appendFileSync(file, '\n' + content + '\n');
@@ -448,7 +451,9 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
       if (!['inbox', 'learnings'].some(folder => realFile.startsWith(path.join(realRoot, folder) + path.sep))) throw new ApiError(404, 'not found');
       description = parse(fs.readFileSync(file, 'utf8')).body;
     }
-    const task = createTask(root, project.id, slug, { title, body: description, every: textField(body, 'every', true) });
+    const every = textField(body, 'every', true);
+    if (every !== undefined) parseEvery(every);
+    const task = createTask(root, project.id, slug, { title, body: description, every });
     const warnings = body.every ? syncSchedules(root, options).failed.map(failure => failure.reason) : [];
     if (fromNote !== undefined) appendLog(task.dir, 'from note', fromNote);
     return { ok: true, entry: flatten(task), warnings };
