@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { listReminders } from './reminders.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -113,6 +115,7 @@ const xmlEscape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&
 export function plistFor(
   label: string, programArguments: string[], intervals: CalendarInterval[],
   environment: Record<string, string>, logFile: string,
+  options: { pollSeconds?: number; runAtLoad?: boolean } = {},
 ): string {
   const argumentsXml = programArguments.map(argument => `    <string>${xmlEscape(argument)}</string>`).join('\n');
   const environmentXml = Object.entries(environment)
@@ -121,6 +124,8 @@ export function plistFor(
     const keys = Object.entries(interval).map(([key, value]) => `      <key>${key}</key><integer>${value}</integer>`).join('\n');
     return `    <dict>\n${keys}\n    </dict>`;
   }).join('\n');
+  const calendarXml = `<key>StartCalendarInterval</key>\n  <array>\n${intervalsXml}\n  </array>`;
+  const timerXml = options.pollSeconds ? `<key>StartInterval</key><integer>${options.pollSeconds}</integer>` : calendarXml;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -134,10 +139,8 @@ ${argumentsXml}
   <dict>
 ${environmentXml}
   </dict>
-  <key>StartCalendarInterval</key>
-  <array>
-${intervalsXml}
-  </array>
+  ${options.runAtLoad ? '<key>RunAtLoad</key><true/>' : ''}
+  ${timerXml}
   <key>StandardOutPath</key><string>${xmlEscape(logFile)}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(logFile)}</string>
 </dict>
@@ -176,6 +179,12 @@ export function syncSchedules(
       continue;
     }
     wanted.set(label, plistFor(label, programArguments, intervals, environment, path.join(logsDir, `${label}.log`)));
+  }
+  if (listReminders(root).some(reminder => reminder.status === 'scheduled')) {
+    const label = `com.2b.reminders.${createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, 12)}`;
+    const environment = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.homedir(), TWOB_HOME: root };
+    const plist = plistFor(label, [...NODE_COMMAND, 'reminder', 'dispatch'], [], environment, path.join(logsDir, `${label}.log`), { pollSeconds: 60, runAtLoad: true });
+    wanted.set(label, plist);
   }
   const written: string[] = [];
   const removed: string[] = [];
@@ -236,6 +245,7 @@ export function buildPrompt(root: string, task: Entry): string {
     'Rules:',
     formatRules(rulesFor(root, task)),
   ];
+  if (task.fields.output) parts.push('', `Save output in collection ${task.fields.output}. Create notes with 2b note add <collection> <slug> --body <content> --source ${task.id}.`);
   if (task.fields['last-result'] === 'error' && task.fields['last-log']) {
     const lastLog = path.join(task.dir, String(task.fields['last-log']));
     parts.push('', `The previous run failed. Read its log first and avoid the same failure: ${lastLog}`);
@@ -245,14 +255,15 @@ export function buildPrompt(root: string, task: Entry): string {
 
 export function notify(title: string, message: string): void {
   if (process.env.TWOB_NO_NOTIFY) return;
-  spawnSync('osascript', ['-e', `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`]);
+  const result = spawnSync('osascript', ['-e', `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) throw new UserError(result.error?.message ?? result.stderr?.trim() ?? 'notification failed');
 }
 
 export function runTask(root: string, task: Entry, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}): { ok: boolean; logFile: string } {
   if (task.fields.kind !== 'recurring') throw new UserError(`${task.id} is not a recurring task`);
   const argv = task.fields.run === 'command'
     ? ['/bin/sh', '-c', String(task.fields.command ?? '')]
-    : agentArgv(String(task.fields.agent ?? 'claude'), buildPrompt(root, task), root);
+    : agentArgv(String(task.fields.agent ?? 'codex'), buildPrompt(root, task), root);
   const runsDir = path.join(task.dir, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   const logName = `${fileTimestamp()}-${String(Date.now() % 1000).padStart(3, '0')}`;

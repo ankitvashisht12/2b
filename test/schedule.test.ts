@@ -184,7 +184,7 @@ test('run preserves logs when timestamps collide', context => {
 test('claude agent allows only the CLI and read tools', context => {
   const root = makeStore();
   createProject(root, 'ops', { area: 'personal' });
-  const task = createTask(root, 'ops', 'agent', { every: 'hourly', body: 'Check status.' });
+  const task = createTask(root, 'ops', 'agent', { every: 'hourly', agent: 'claude', body: 'Check status.' });
   context.mock.method(childProcess, 'spawnSync', (command, args) => {
     assert.equal(command, 'claude');
     assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--add-dir')), ['Bash(2b:*)', 'Read', 'Glob', 'Grep']);
@@ -286,4 +286,22 @@ test('jobs overview scopes loaded plists and returns limited newest run history'
   job = jobsOverview(root, { agentsDir })[0];
   assert.equal(job.loaded, false);
   assert.equal(job.nextRun, null);
+});
+
+test('Codex is the default runner and missing agent metadata uses Codex', context => {
+  const root = makeStore();
+  createProject(root, 'ops', { area: 'personal' });
+  const task = createTask(root, 'ops', 'codex-default', { every: 'hourly', body: 'Summarize the available notes.' });
+  assert.equal(task.fields.agent, 'codex');
+  delete task.fields.agent;
+  writeEntry(task);
+  context.mock.method(childProcess, 'spawnSync', (command, args) => {
+    assert.equal(command, 'codex');
+    assert.deepEqual(args.slice(0, 6), ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-C', root]);
+    assert.match(args[6], /Summarize the available notes/);
+    return { status: 0, stdout: 'Saved.', stderr: '' };
+  });
+  syncBuiltinESMExports();
+  context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal(runTask(root, task).ok, true);
 });

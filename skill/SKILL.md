@@ -3,7 +3,7 @@ name: 2b
 description: The user's second brain for projects, tasks, deadlines, statuses, artifacts, notes, learnings, rules, and recurring jobs. Use for "2b", "second brain", "save this", "put this in 2b", "artifact", "what is active / paused / due", "what did I do this week", "every day at 7pm do X", "remind me", "rule for this task", or when starting work on something that may already be a 2b task.
 ---
 
-# 2b
+# 2b v2.0
 
 All of the user's work state lives in the 2b store (`2b path` prints it; default `~/obsidian/2b`). Change it only through the `2b` CLI. Read files directly when you need their content. Never hand-edit `readme.md` frontmatter or `log.md`.
 
@@ -11,7 +11,10 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 
 - **Project**: lasts weeks or months. Area `work` or `personal`. Status `active | paused | on-hold | done | archived`.
 - **Task**: the atomic unit, about one PR or one investigation. Status `todo | doing | blocked | done | dropped | paused`. Kind `normal` or `recurring`.
-- **Artifact**: a file in a task folder, registered with `about` and `why`.
+- **Collection**: a named group inside a project. Holds notes and artifacts; no work status.
+- **Note**: content inside a collection. No task required. Types: general, journal, reflection, learning, research, decision, meeting.
+- **Artifact**: a file in a task, collection, or note folder, registered with `about` and `why`.
+- **Reminder**: one-time or repeating notification, outside projects or optionally linked to a project/task. A reminder does not perform AI work or mark a task done.
 - **Log**: every CLI write appends a dated line. `2b week` reads these.
 - `paused`, `on-hold`, `blocked`, `dropped` need `--reason`.
 - Task ids accept any unique part of the name: `2b show limiter-recovery`.
@@ -25,7 +28,7 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 | "Pause X because Y" | `2b status <project> paused --reason "Y"` |
 | "Task T depends on U" | `2b add <T> link <U> depends-on` |
 | "This PR is part of T" | `2b add <T> pr <url>` |
-| "Save this / put it in 2b" | find or create the task, then `2b artifact add <task> <name.html> --about "..." --why "..."`, then write the content to the printed path |
+| "Save this / put it in 2b" | use the relevant task or collection; do not create a task just to hold content. For files, run `2b artifact add <task> <name.html> --about "..." --why "..."`, then write the content to the printed path |
 | "What's active / paused / due?" | `2b ls --json`, `2b ls --status paused --json`, `2b ls --tasks --status blocked --json`, `2b ls --tasks --due-before +7d --json` |
 | "What did I do this week / last week?" | `2b week [any day in that week] --json` |
 | "Find the thing about Z" | `2b find "Z"` |
@@ -56,6 +59,8 @@ All of the user's work state lives in the 2b store (`2b path` prints it; default
 
 ## Recurring tasks
 
+New agent jobs default to Codex (`codex exec`). Use `--agent claude` for Claude. Preserve the agent choice on existing jobs. Agent runs start fresh, use saved instructions and rules, and have a 15-minute limit. Specify accessible chat sources; do not assume the job inherits this conversation.
+
 - "Every day at 7pm, do X" → `2b new task <project> <slug> --title "..." --every "daily 19:00" --run agent --body "<what, why, current state, and the full instruction>"`
 - "On weekdays at 2pm open the dashboard" → `2b new task <project> <slug> --title "Open dashboard" --every "weekdays 14:00" --run command --command "2b dash --open" --body "What: Open the dashboard on weekdays. Why: Review active work. Current state: Scheduled."`
 - `2b delete <task>` moves a recurring task to `.trash/` and stops its schedule. It prints a trash id.
@@ -76,3 +81,27 @@ Short, plain terms. For "what did I do", group by project, one line per meaningf
 
 - Put `--` before text that starts with a dash: `2b log <task> -- "--force was wrong"`.
 - `2b check` reports broken links, missing reasons, and bad names. Run it after bulk changes.
+
+## Collections and notes
+
+- Create: `2b new collection <project> <slug> --title "..." --body "..."`.
+- List: `2b collection ls [--project P] --json`, `2b note ls [<collection>] --json`.
+- Write: `2b note add <collection> <slug> --title "..." --type reflection --body "..." [--source TASK]`.
+- Edit: `2b note edit <note> --body "..."`; rename with `2b set <note> title "..."`.
+- Inspect: `2b show <collection|note> --json`. Full note IDs are `<project>/collections/<collection>/notes/<note>`.
+- Save a file: `2b artifact add <collection|note|task> <file-or-name> --about "..." --why "..." [--source TASK]`.
+- Set a task/job destination: `--output <collection>` at creation, or `2b set <task> output <collection>`. It must be in the same project. Destination metadata does not create content. Create the note or artifact using `--source <task>` to keep source/output links.
+- Use collections for journals, reflections, research, decisions, and meeting notes. Create a task only when there is an action to track. Keep inbox and learnings for quick capture when the destination is unknown.
+- Notes use Markdown; explainers and reports can use HTML artifacts. Never publish a claude.ai artifact.
+
+## Reminders
+
+- “Remind me at a time” → `2b reminder add <slug> --message "..." --at "yyyy-mm-dd HH:MM" --timezone Asia/Kolkata`.
+- “Remind me each evening” → `2b reminder add <slug> --message "..." --every "daily 21:00" --timezone Asia/Kolkata`.
+- Link optionally with `--project <project>` or `--task <task>`. A task link also sets its project. No project is required.
+- Use the user's known time zone. If absent, the CLI saves the current local zone. Give exactly one of `--at` and `--every`. Resolve a relative time into a concrete future date before running the command. Ask only if the intended time is unclear.
+- Read: `2b reminder ls --json`; history: `2b reminder show <id> --json`; cancel: `2b reminder cancel <id>`.
+- Report the saved next time and time zone. If schedule registration fails, state that the reminder was saved but is not reliably scheduled. Repair with `2b schedule sync`.
+- A local worker runs every minute and at login; it sends overdue reminders after downtime. Missed repeat occurrences are combined into one notification. Delivery errors retry next minute. Notification visibility depends on macOS settings. Sent does not mean read or completed.
+- A reminder notifies the user. A job runs an agent or command. Use jobs for “read chats and save a summary,” reminders for “tell me to write a summary.”
+- The dashboard has Collections and Reminders tabs, including creation, reminder history, and cancellation.

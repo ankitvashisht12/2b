@@ -4,9 +4,10 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   NODE_COMMAND, UserError, CLOSED_STATUSES, PRIORITY_LABELS, addDays, appendLog, assertDay, assertSlug,
-  createTask, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
+  createTask, createCollection, createCollectionNote, listCollections, listNotes, listProjects, listTasks, localDate, priorityOf, priorityRank, resolve, reverseLinks,
   setField, setStatus, withStoreReadCache, type Entry, type Artifact,
 } from './store.ts';
+import { createReminder, listReminders, cancelReminder, reminderDir } from './reminders.ts';
 import { isoWeek, readAllEvents } from './week.ts';
 import { formatRules, rulesFor } from './rules.ts';
 import { jobsOverview, syncSchedules } from './schedule.ts';
@@ -87,7 +88,12 @@ function assertStoreEntries(root: string): void {
   for (const projectDir of directories(path.join(root, 'projects'))) {
     assertEntryPaths(root, projectDir, validation);
     for (const taskDir of directories(path.join(projectDir, 'tasks'))) assertEntryPaths(root, taskDir, validation);
+    for (const collectionDir of directories(path.join(projectDir, 'collections'))) {
+      assertEntryPaths(root, collectionDir, validation);
+      for (const noteDir of directories(path.join(collectionDir, 'notes'))) assertEntryPaths(root, noteDir, validation);
+    }
   }
+  for (const dir of directories(path.join(root, 'reminders'))) assertEntryPaths(root, dir, validation);
 }
 
 function assertTrashPaths(root: string): void {
@@ -128,9 +134,10 @@ function findEntry(root: string, id: string): Entry {
 
 function eventsWithTitles(root: string) {
   const projects = new Map(listProjects(root).map(entry => [entry.id, entry]));
-  const tasks = new Map(listTasks(root).map(entry => [entry.id, entry]));
+  const tasks = new Map([...listTasks(root), ...listCollections(root), ...listNotes(root)].map(entry => [entry.id, entry]));
   return readAllEvents(root).map(event => ({
     ...event, projectTitle: String(projects.get(event.project)?.fields.title ?? event.project),
+    entryTitle: event.entry ? String(tasks.get(event.entry)?.fields.title ?? event.entry) : null,
     taskTitle: event.task ? String(tasks.get(event.task)?.fields.title ?? event.task) : null,
   })).sort((first, second) => second.at.localeCompare(first.at));
 }
@@ -139,13 +146,13 @@ function artifactsFor(root: string, entry: Entry) {
   const groups: Record<'markdown' | 'html' | 'data' | 'images' | 'other', {
     path: string; title: string; about: string; why: string; added: string; size: number;
   }[]> = { markdown: [], html: [], data: [], images: [], other: [] };
-  if (entry.kind !== 'task') return groups;
+  if (!['task', 'collection', 'note'].includes(entry.kind)) return groups;
   const registered = new Map(((entry.fields.artifacts as Artifact[] | null) ?? []).map(item => [item.path, item]));
   const files = new Set(registered.keys());
   const walk = (dir: string, prefix = '') => {
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
       const relative = path.join(prefix, item.name);
-      if (item.isDirectory() && item.name !== 'runs') walk(path.join(dir, item.name), relative);
+      if (item.isDirectory() && !['runs', 'notes'].includes(item.name)) walk(path.join(dir, item.name), relative);
       else if (item.isFile() && !['readme.md', 'log.md', 'rules.md'].includes(item.name)) files.add(relative);
     }
   };
@@ -174,7 +181,7 @@ function artifactCount(root: string, entry: Entry): number {
   const walk = (dir: string, prefix = '') => {
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
       const relative = path.join(prefix, item.name);
-      if (item.isDirectory() && item.name !== 'runs') walk(path.join(dir, item.name), relative);
+      if (item.isDirectory() && !['runs', 'notes'].includes(item.name)) walk(path.join(dir, item.name), relative);
       else if (item.isFile() && included(relative)) files.add(relative);
     }
   };
@@ -265,6 +272,7 @@ function readDashboardState(root: string, range: string | URLSearchParams, optio
       || dateOrder(first.due).localeCompare(dateOrder(second.due))
       || (second.lastActivity ?? '').localeCompare(first.lastActivity ?? '') || first.id.localeCompare(second.id)),
     events: events.filter(event => event.at.slice(0, 10) >= selected.from && event.at.slice(0, 10) <= selected.to),
+    collections: listCollections(root).map(flatten), notes: listNotes(root).map(flatten), reminders: listReminders(root),
     jobs, failed: jobs.filter(job => job.lastResult === 'error'), trash: listTrash(root).length,
   };
 }
@@ -287,7 +295,9 @@ export function entryDetail(root: string, id: string, options: ScheduleOptions =
     priority: priorityOf(entry), priorityLabel: PRIORITY_LABELS[priorityOf(entry)],
     artifacts: artifactsFor(root, entry), job: jobsOverview(root, options).find(job => job.id === entry.id) ?? null,
     reverseLinks: reverseLinks(root, entry.id), rules: formatRules(rulesFor(root, entry)), log: readLog(entry),
-    recentEvents: eventsWithTitles(root).filter(event => entry.kind === 'project' ? event.project === entry.id : event.task === entry.id).slice(0, 20),
+    recentEvents: eventsWithTitles(root).filter(event => entry.kind === 'project' ? event.project === entry.id : (event.task === entry.id || event.entry === entry.id)).slice(0, 20),
+    collections: entry.kind === 'project' ? listCollections(root, entry.id).map(flatten) : [],
+    notes: entry.kind === 'collection' ? listNotes(root, entry.id).map(flatten) : [],
     tasks: entry.kind === 'project' ? listTasks(root, entry.id).map(flatten) : [],
   };
 }
@@ -357,11 +367,43 @@ function writeRoute(root: string, route: string, body: Record<string, unknown>, 
   const allowed: Record<string, string[]> = {
     '/api/status': ['id', 'status', 'reason'], '/api/set': ['id', 'field', 'value'],
     '/api/run': ['id'], '/api/delete': ['id'], '/api/restore': ['trashId'],
+    '/api/reminder': ['slug', 'message', 'title', 'at', 'every', 'timezone', 'project', 'task'],
+    '/api/reminder/cancel': ['id'],
+    '/api/collection': ['project', 'slug', 'title', 'body'],
+    '/api/note': ['collection', 'slug', 'title', 'body', 'type', 'source'],
     '/api/task': ['project', 'slug', 'title', 'body', 'fromNote'],
   };
   if (!allowed[route]) throw new ApiError(404, 'not found');
   if (Object.keys(body).some(key => !allowed[route].includes(key))) throw new ApiError(400, 'unknown field');
   assertStoreEntries(root);
+  if (route === '/api/reminder' || route === '/api/reminder/cancel') {
+    let reminder;
+    if (route === '/api/reminder') {
+      const slug = textField(body, 'slug')!;
+      assertEntryPaths(root, reminderDir(root, slug));
+      reminder = createReminder(root, slug, { message: textField(body, 'message')!, title: textField(body, 'title', true),
+        at: textField(body, 'at', true), every: textField(body, 'every', true), timezone: textField(body, 'timezone', true),
+        project: textField(body, 'project', true), task: textField(body, 'task', true) });
+    } else reminder = cancelReminder(root, textField(body, 'id')!);
+    const warnings = syncSchedules(root, options).failed.map(failure => failure.reason);
+    return { ok: true, reminder, warnings };
+  }
+  if (route === '/api/collection') {
+    const project = findEntry(root, textField(body, 'project')!);
+    const slug = textField(body, 'slug')!;
+    assertSlug(slug, 'collection');
+    assertEntryPaths(root, path.join(project.dir, 'collections', slug));
+    return { ok: true, entry: flatten(createCollection(root, project.id, slug, { title: textField(body, 'title', true), body: textField(body, 'body', true) })) };
+  }
+  if (route === '/api/note') {
+    const collection = findEntry(root, textField(body, 'collection')!);
+    const slug = textField(body, 'slug')!;
+    assertSlug(slug, 'note');
+    assertEntryPaths(root, path.join(collection.dir, 'notes', slug));
+    return { ok: true, entry: flatten(createCollectionNote(root, collection.id, slug, {
+      title: textField(body, 'title', true), body: textField(body, 'body', true), type: textField(body, 'type', true), source: textField(body, 'source', true),
+    })) };
+  }
   if (route === '/api/restore') {
     const trashId = textField(body, 'trashId')!;
     assertTrashPaths(root);
@@ -453,6 +495,10 @@ export function startDashboard(root: string, port: number, options: DashboardOpt
       } else if (url.pathname === '/api/ping') sendJson({ ok: true, root });
       else if (url.pathname === '/api/state') sendJson(dashboardState(root, url.searchParams, options));
       else if (url.pathname === '/api/entry') sendJson(entryDetail(root, url.searchParams.get('id') ?? '', options));
+      else if (url.pathname === '/api/reminders') {
+        assertStoreEntries(root);
+        sendJson({ reminders: listReminders(root).map(reminder => ({ ...reminder, history: fs.readFileSync(path.join(reminderDir(root, reminder.id), 'log.md'), 'utf8') })) });
+      }
       else if (url.pathname === '/api/inbox') sendJson({ notes: inboxNotes(root) });
       else if (url.pathname === '/api/trash') { assertTrashPaths(root); sendJson(listTrash(root)); }
       else if (url.pathname === '/api/render' || url.pathname === '/api/file') {

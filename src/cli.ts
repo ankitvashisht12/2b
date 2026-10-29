@@ -10,22 +10,31 @@ import { findInStore } from './find.ts';
 import { checkStore } from './check.ts';
 import { DEFAULT_PORT, openDashboard, startDashboard } from './dash.ts';
 import { trashTask, restoreTask, listTrash } from './trash.ts';
+import { createReminder, listReminders, cancelReminder, dispatchReminders, reminderDir } from './reminders.ts';
 import { applyPlan, scanSources } from './importer.ts';
 
-const USAGE = `2b — second brain
+const USAGE = `2b — second brain v2.0.0
 
   2b init
   2b new project <slug> --area work|personal [--title T] [--deadline D] [--priority P1|P2|P3|P4|P5] [--body TEXT]
   2b new task <project> <slug> [--title T] [--due D] [--priority high|med|low] [--repo R] [--branch B] [--body TEXT]
-  2b new task <project> <slug> --every "daily 19:00" --run agent|command [--agent claude|codex] [--command CMD] [--body RULE]
+  2b new task <project> <slug> --every "daily 19:00" --run agent|command [--agent codex|claude] [--output COLLECTION] [--command CMD] [--body RULE]
+  2b new collection <project> <slug> [--title T] [--body TEXT]
+  2b collection ls [--project P]
+  2b note add <collection> <slug> [--title T] [--body TEXT] [--type general|journal|research|decision|meeting|reflection|learning] [--source TASK]
+  2b note ls [<collection>]
+  2b note edit <note> --body TEXT
+  2b reminder add <slug> --message TEXT (--at "yyyy-mm-dd HH:MM" | --every "daily 19:00") [--timezone Asia/Kolkata] [--project P] [--task T]
+  2b reminder ls | show <id> | cancel <id>
+  2b reminder dispatch
   2b path [<project|task>]
   2b status <project|task> <status> [--reason R]
   2b set <project|task> <field> <value>
-  2b add <project|task> pr <url> | resource <title> <path-or-url> | link <target> depends-on|follow-up|related
+  2b add <project|task> pr <url> | resource <title> <path-or-url> | link <target> depends-on|follow-up|related|produces|produced-by
   2b log <project|task> <note>
   2b ls [--tasks] [--priority V] [--status S] [--area A] [--project P] [--due-before D|+Nd] [--all] [--short]
-  2b show <project|task>
-  2b artifact add <task> <file-or-name> [--title T] --about A --why W
+  2b show <project|task|collection|note>
+  2b artifact add <task|collection|note> <file-or-name> [--title T] --about A --why W [--source TASK]
   2b find <text>
   2b week [yyyy-mm-dd]
   2b dump <slug> [--title T]        2b learn <slug> [--title T]
@@ -59,7 +68,7 @@ function need(value: string | undefined, what: string): string {
 }
 
 const text = (name: string) => options[name] as string | undefined;
-const summary = (entry: Entry) => ({ id: entry.id, path: entry.dir, ...entry.fields, priority: store.priorityOf(entry) });
+const summary = (entry: Entry) => ({ id: entry.id, path: entry.dir, ...entry.fields, ...(store.priorityOf(entry) ? { priority: store.priorityOf(entry) } : {}) });
 const sortEntries = (entries: Entry[]) => entries.sort((left, right) => {
   const rank = store.priorityRank(store.priorityOf(left)) - store.priorityRank(store.priorityOf(right));
   const dateField = left.kind === 'project' ? 'deadline' : 'due';
@@ -122,11 +131,16 @@ const commands: Record<string, () => void | Promise<void>> = {
       output(summary(entry), entry.dir);
       return;
     }
+    if (what === 'collection') {
+      const entry = store.createCollection(root, need(first, 'project'), need(second, 'collection slug'), { title: text('title'), body: text('body') });
+      output(summary(entry), entry.dir);
+      return;
+    }
     if (what === 'task') {
       if (text('every')) parseEvery(text('every')!);
       const entry = store.createTask(root, need(first, 'project'), need(second, 'task slug'), {
         title: text('title'), priority: text('priority'), due: text('due'), repo: text('repo'), branch: text('branch'), body: text('body'),
-        every: text('every'), run: text('run'), agent: text('agent'), command: text('command'),
+        output: text('output'), every: text('every'), run: text('run'), agent: text('agent'), command: text('command'),
       });
       syncIfRecurring(entry);
       output(summary(entry), entry.dir);
@@ -152,7 +166,13 @@ const commands: Record<string, () => void | Promise<void>> = {
     const field = need(rest[1], 'field');
     const value = rest.slice(2).join(' ');
     if (field === 'every') parseEvery(value);
-    store.setField(entry, field, value);
+    let savedValue = value;
+    if (field === 'output' && value) {
+      const collection = store.resolve(root, value);
+      if (collection.kind !== 'collection' || collection.project !== entry.project) throw new store.UserError('output must be a collection in this project');
+      savedValue = collection.id;
+    }
+    store.setField(entry, field, savedValue);
     syncIfRecurring(entry);
     output(summary(entry), `${entry.id}: ${field} = ${value || '(empty)'}`);
   },
@@ -211,12 +231,16 @@ const commands: Record<string, () => void | Promise<void>> = {
     const logFile = path.join(entry.dir, 'log.md');
     const recentLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').slice(-10) : [];
     const tasks = entry.kind === 'project' ? store.listTasks(root, entry.id) : [];
+    const collections = entry.kind === 'project' ? store.listCollections(root, entry.id) : [];
+    const notes = entry.kind === 'collection' ? store.listNotes(root, entry.id) : [];
     output(
-      { ...summary(entry), body: entry.body, reverseLinks: reverse, rules, tasks: tasks.map(summary), recentLog },
+      { ...summary(entry), collections: collections.map(summary), notes: notes.map(summary), body: entry.body, reverseLinks: reverse, rules, tasks: tasks.map(summary), recentLog },
       [
         `${entry.id} (${entry.kind})`,
-        ...Object.entries({ ...entry.fields, priority: store.PRIORITY_LABELS[store.priorityOf(entry)] }).map(([key, value]) => `${key}: ${typeof value === 'string' || value === null ? value ?? '' : JSON.stringify(value)}`),
+        ...Object.entries({ ...entry.fields, ...(store.priorityOf(entry) ? { priority: store.PRIORITY_LABELS[store.priorityOf(entry)] } : {}) }).map(([key, value]) => `${key}: ${typeof value === 'string' || value === null ? value ?? '' : JSON.stringify(value)}`),
         `path: ${entry.dir}`,
+        ...([...collections, ...notes].length ? ['', entry.kind === 'project' ? 'Collections:' : 'Notes:', ...[...collections, ...notes].map(item => `  ${item.id}  ${item.fields.title}`)] : []),
+        '', entry.body.trim(),
         ...(tasks.length ? ['', 'Tasks:', ...tasks.map(task => taskLine(task, false))] : []),
         ...(reverse.length ? ['', 'Linked from:', ...reverse.map(link => `  ${link.from} (${link.type})`)] : []),
         '', 'Rules:', formatRules(rules),
@@ -226,10 +250,87 @@ const commands: Record<string, () => void | Promise<void>> = {
   },
 
   artifact() {
-    if (rest[0] !== 'add') throw new store.UserError('usage: 2b artifact add <task> <file-or-name> --about A --why W');
+    if (rest[0] !== 'add') throw new store.UserError('usage: 2b artifact add <task|collection|note> <file-or-name> --about A --why W');
     const entry = store.resolve(root, need(rest[1], 'task'));
+    const source = store.outputSource(root, text('source'));
     const file = store.addArtifact(entry, need(rest[2], 'file or name'), { title: text('title'), about: text('about'), why: text('why') });
+    if (source) {
+      store.linkOutput(root, source, entry);
+      store.addResource(source, text('title') ?? path.basename(file), path.relative(source.dir, file));
+    }
     output({ path: file }, file);
+  },
+
+  collection() {
+    if (rest[0] !== 'ls') throw new store.UserError('usage: 2b collection ls [--project P]');
+    const entries = store.listCollections(root, text('project'));
+    output(entries.map(summary), entries.map(entry => `${entry.id}  ${entry.fields.title}`).join('\n') || 'No collections.');
+  },
+
+  note() {
+    if (rest[0] === 'edit') {
+      const entry = store.resolve(root, need(rest[1], 'note'));
+      if (entry.kind !== 'note') throw new store.UserError('give a note id');
+      const body = need(text('body'), '--body');
+      entry.body = `\n# ${entry.fields.title}\n\n${body}\n`;
+      store.writeEntry(entry);
+      store.appendLog(entry.dir, 'note updated', String(entry.fields.title));
+      output(summary(entry), path.join(entry.dir, 'readme.md'));
+      return;
+    }
+    if (rest[0] === 'add') {
+      const entry = store.createCollectionNote(root, need(rest[1], 'collection'), need(rest[2], 'note slug'), {
+        title: text('title'), body: text('body'), type: text('type'), source: text('source'),
+      });
+      output(summary(entry), path.join(entry.dir, 'readme.md'));
+      return;
+    }
+    if (rest[0] === 'ls') {
+      const collection = rest[1] ? store.resolve(root, rest[1]) : null;
+      if (collection && collection.kind !== 'collection') throw new store.UserError('give a collection id');
+      const entries = store.listNotes(root, collection?.id);
+      output(entries.map(summary), entries.map(entry => `${entry.id}  ${entry.fields.title}`).join('\n') || 'No notes.');
+      return;
+    }
+    throw new store.UserError('usage: 2b note add <collection> <slug> | ls [<collection>]');
+  },
+
+  reminder() {
+    if (rest[0] === 'add') {
+      const reminder = createReminder(root, need(rest[1], 'reminder slug'), { message: need(text('message'), '--message'),
+        title: text('title'), at: text('at'), every: text('every'), timezone: text('timezone'), project: text('project'), task: text('task') });
+      const sync = syncSchedules(root);
+      output({ ...reminder, scheduleFailures: sync.failed }, `${reminder.id}: ${reminder.nextAt} (${reminder.timezone})`);
+      if (sync.failed.length) { console.error('Reminder saved, but scheduling failed: ' + sync.failed.map(item => item.reason).join('; ')); process.exitCode = 1; }
+      return;
+    }
+    if (rest[0] === 'ls') {
+      const reminders = listReminders(root).filter(item => !text('status') || item.status === text('status'));
+      output(reminders, reminders.map(item => `${item.id}  ${item.status}  ${item.nextAt ?? '-'}  ${item.message}`).join('\n') || 'No reminders.');
+      return;
+    }
+    if (rest[0] === 'show') {
+      const id = need(rest[1], 'reminder id');
+      const reminder = listReminders(root).find(item => item.id === id || item.id === `reminders/${id}`);
+      if (!reminder) throw new store.UserError(`no reminder matches "${id}"`);
+      const history = fs.readFileSync(path.join(reminderDir(root, reminder.id), 'log.md'), 'utf8');
+      output({ ...reminder, history }, `${JSON.stringify(reminder, null, 2)}\n${history}`);
+      return;
+    }
+    if (rest[0] === 'cancel') {
+      const reminder = cancelReminder(root, need(rest[1], 'reminder id'));
+      const sync = syncSchedules(root);
+      output({ ...reminder, scheduleFailures: sync.failed }, `${reminder.id}: cancelled`);
+      if (sync.failed.length) { console.error(sync.failed.map(item => item.reason).join('; ')); process.exitCode = 1; }
+      return;
+    }
+    if (rest[0] === 'dispatch') {
+      const result = dispatchReminders(root);
+      output(result, `Sent: ${result.sent.length}. Failed: ${result.failed.length}.`);
+      if (result.failed.length) process.exitCode = 1;
+      return;
+    }
+    throw new store.UserError('usage: 2b reminder add|ls|show|cancel|dispatch');
   },
 
   find() {
@@ -381,12 +482,13 @@ async function main(): Promise<void> {
   const parsed = parseArgs({
     allowPositionals: true,
     options: Object.fromEntries([
-      ...['json', 'tasks', 'all', 'short', 'open', 'dry-run', 'help'].map(name => [name, { type: 'boolean' as const }]),
+      ...['json', 'tasks', 'all', 'short', 'open', 'dry-run', 'help', 'version'].map(name => [name, { type: 'boolean' as const }]),
       ...['area', 'title', 'deadline', 'due', 'repo', 'branch', 'reason', 'status', 'project', 'due-before', 'about', 'why',
-        'priority', 'key', 'every', 'run', 'agent', 'command', 'body', 'port'].map(name => [name, { type: 'string' as const }]),
+        'priority', 'key', 'every', 'run', 'agent', 'command', 'body', 'port', 'output', 'source', 'type', 'message', 'at', 'timezone', 'task'].map(name => [name, { type: 'string' as const }]),
     ]),
   });
   options = parsed.values as Options;
+  if (options.version) { console.log('2.0.0'); return; }
   const [command, ...positionals] = parsed.positionals;
   rest = positionals;
   if (!command || command === 'help' || options.help) {

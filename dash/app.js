@@ -20,10 +20,13 @@ function relativeTime(value) {
   return relative.format(Math.round(minutes / 1440), 'day');
 }
 const iconPaths = {
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
   projects: '<rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M8 5V3m8 2V3"/>',
   due: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18m-13 4h3m3 0h2"/>',
   timeline: '<path d="M5 3v18m0-14h7m-7 9h12"/><circle cx="15" cy="7" r="3"/><circle cx="19" cy="16" r="2"/>',
+  reminders: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
+  collections: '<path d="M3 5h7l2 3h9v13H3Z"/>',
   jobs: '<path d="m13 2-9 12h7l-1 8 10-13h-8Z"/>',
   inbox: '<path d="M4 4h16l2 12v4H2v-4L4 4Zm-2 12h6l2 3h4l2-3h6"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
@@ -61,7 +64,7 @@ const iconPaths = {
   branch: '<circle cx="6" cy="4" r="2"/><circle cx="6" cy="20" r="2"/><circle cx="18" cy="6" r="2"/><path d="M6 6v12m0-6h6a6 6 0 0 0 6-4"/>',
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || iconPaths.file}</svg>`;
-const navigation = [['home', 'Home', 'h'], ['projects', 'Projects', 'p'], ['due', 'Due', 'd'], ['timeline', 'Timeline', 't'], ['jobs', 'Jobs', 'j'], ['inbox', 'Inbox', 'i']];
+const navigation = [['home', 'Home', 'h'], ['projects', 'Projects', 'p'], ['due', 'Due', 'd'], ['timeline', 'Timeline', 't'], ['jobs', 'Jobs', 'j'], ['collections', 'Collections', 'c'], ['reminders', 'Reminders', 'r'], ['inbox', 'Inbox', 'i']];
 const projectStatuses = ['active', 'paused', 'on-hold', 'done', 'archived'];
 const taskStatuses = ['todo', 'doing', 'blocked', 'done', 'dropped'];
 const projectPriorityLabels = { P1: '🔥 P1', P2: '⚡ P2', P3: '🎯 P3', P4: '🌱 P4', P5: '💤 P5' };
@@ -98,7 +101,7 @@ function parseRoute() {
   const route = { path, params, view: kind, id: '', drawer: false };
   if (kind === 't') { route.drawer = true; route.id = decodePath(parts.slice(1).join('/')); route.view = params.get('context') || 'home'; }
   if (kind === 'p') { route.id = decodePath(parts.slice(1).join('/')); route.view = 'project'; }
-  if (!['home', 'projects', 'project', 'due', 'timeline', 'jobs', 'inbox'].includes(route.view) && !route.view.startsWith('p/')) route.view = 'home';
+  if (!['home', 'projects', 'project', 'due', 'timeline', 'jobs', 'collections', 'reminders', 'inbox'].includes(route.view) && !route.view.startsWith('p/')) route.view = 'home';
   if (route.view.startsWith('p/')) { route.projectContext = route.view.slice(2); route.view = 'project'; }
   return route;
 }
@@ -152,11 +155,11 @@ function closeDocument() {
   else closeDrawer();
 }
 function getEntry(id) {
-  const summary = [...(store.data?.projects || []), ...(store.data?.tasks || [])].find(entry => entry.id === id);
+  const summary = [...(store.data?.projects || []), ...(store.data?.tasks || []), ...(store.data?.collections || []), ...(store.data?.notes || [])].find(entry => entry.id === id);
   const detail = store.entries.get(id);
   if (!summary && !detail) return null;
   const fields = detail?.fields || {};
-  return { ...fields, ...detail, ...summary, fields, type: detail?.kind === 'project' || store.data?.projects.some(project => project.id === id) ? 'project' : 'task', statusReason: summary?.statusReason ?? fields['status-reason'], relativeDir: detail?.relativeDir };
+  return { ...fields, ...detail, ...summary, fields, type: ['collection', 'note'].includes(detail?.kind || summary?.type) ? detail?.kind || summary.type : detail?.kind === 'project' || store.data?.projects.some(project => project.id === id) ? 'project' : 'task', statusReason: summary?.statusReason ?? fields['status-reason'], relativeDir: detail?.relativeDir };
 }
 const isProject = entry => entry?.type === 'project' || store.data?.projects.some(project => project.id === entry?.id);
 function matchesFilters(entry) {
@@ -300,7 +303,115 @@ function renderProjectPage() {
     if (closedStatuses.includes(status)) return `<details class="section" data-url-details="tasks-${status}" ${store.route.params.get(`tasks-${status}`) === '1' ? 'open' : ''}><summary>${status === 'done' ? 'Done' : 'Dropped'} <span class="count">${items.length}</span></summary>${taskList(items)}</details>`;
     return section(({ doing: 'In progress', todo: 'To do', blocked: 'Blocked', paused: 'Paused' })[status], taskList(items), items.length);
   }).join('');
-  return pageHeading(project.title, '', `<button class="text-button" data-view="projects">${icon('left')} All projects</button>`) + metadata + renderDescription(entry) + section('Tasks', groups || (hasFilters() ? emptyFiltered() : '<p class="empty-inline">No tasks yet. Add one with <code>2b new task ' + escapeHtml(id) + ' task-slug --title "Task title"</code>.</p>'), tasks.length) + renderLinks(entry) + section('Recent activity', renderRecentEvents(entry.recentEvents), entry.recentEvents?.length || 0);
+  return pageHeading(project.title, '', `<button class="text-button" data-view="projects">${icon('left')} All projects</button>`) + metadata + renderDescription(entry) + section('Collections', contentList(entry.collections || []), entry.collections?.length || 0, creationButton('collection', 'New collection', id)) + section('Tasks', groups || (hasFilters() ? emptyFiltered() : '<p class="empty-inline">No tasks yet. Add one with <code>2b new task ' + escapeHtml(id) + ' task-slug --title "Task title"</code>.</p>'), tasks.length) + renderLinks(entry) + section('Recent activity', renderRecentEvents(entry.recentEvents), entry.recentEvents?.length || 0);
+}
+function contentList(entries) {
+  return entries.length ? `<ul class="link-list">${entries.map(entry => `<li><button class="text-button" data-open="${attribute(entry.id)}">${icon(entry.type === 'collection' ? 'collections' : 'file')}${escapeHtml(entry.title)}</button>${entry['note-type'] ? ` <span class="count">${escapeHtml(entry['note-type'])}</span>` : ''}</li>`).join('')}</ul>` : '<p class="empty-inline">No content yet.</p>';
+}
+function collectionForm(selectedProject = '') {
+  return `<form id="collection-form" class="v2-form"><label>Project<select name="project" required>${store.data.projects.map(project => `<option value="${attribute(project.id)}" ${project.id === selectedProject ? 'selected' : ''}>${escapeHtml(project.title)}</option>`).join('')}</select></label><label>Title<input name="title" required maxlength="200"></label><label>Description<textarea name="body" required></textarea></label><button type="submit" class="primary-button">Create collection</button></form>`;
+}
+function noteForm(selectedCollection = '') {
+  return `<form id="note-form" class="v2-form"><label>Collection<select name="collection" required>${store.data.collections.map(collection => `<option value="${attribute(collection.id)}" ${collection.id === selectedCollection ? 'selected' : ''}>${escapeHtml(collection.title)} · ${escapeHtml(collection.project)}</option>`).join('')}</select></label><label>Title<input name="title" required maxlength="200"></label><label>Type<select name="type">${['general', 'journal', 'reflection', 'learning', 'research', 'decision', 'meeting'].map(type => `<option>${type}</option>`).join('')}</select></label><label>Content<textarea name="body" required rows="5"></textarea></label><button type="submit" class="primary-button">Save note</button></form>`;
+}
+function creationButton(kind, label, project = '') {
+  return `<button class="${kind === 'note' ? 'secondary-button' : 'primary-button'}" data-action="new-${kind}" ${project ? `data-project="${attribute(project)}"` : ''} aria-haspopup="dialog">${escapeHtml(label)}</button>`;
+}
+function renderCollections() {
+  if (!store.data.projects.length) return pageHeading('Collections', 'Notes and files, grouped within your projects.') + emptyState('Create a project first', 'Each collection belongs to a project. Create one with the CLI.', 'collections');
+  const collections = store.data.collections.filter(matchesFilters);
+  const actions = `<div class="creation-actions">${creationButton('collection', 'New collection')}${store.data.collections.length ? creationButton('note', 'New note') : ''}</div>`;
+  return pageHeading('Collections', 'Notes and files, grouped within your projects.', actions) +
+    section('Collections', collections.length ? collections.map(collection => section(collection.title, `<p class="count">${escapeHtml(collection.project)}</p>${contentList([collection, ...store.data.notes.filter(note => note.collection === collection.id)])}`)).join('') : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Create a collection to start saving notes.</p>', collections.length);
+}
+function reminderDate(reminder, value) {
+  return value ? new Intl.DateTimeFormat(undefined, { timeZone: reminder.timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
+}
+function reminderForm() {
+  return `<form id="reminder-form" class="v2-form"><label>Message<input name="message" required maxlength="1000"></label><label>Schedule<select name="reminder-mode"><option value="once">One time</option><option value="repeat">Repeating</option></select></label><label data-schedule-field="once">Date and time<input name="at" type="datetime-local" required></label><label data-schedule-field="repeat" hidden>Repeat schedule<input name="every" placeholder="daily 19:00" disabled></label><p data-schedule-field="repeat" class="count" hidden>Use daily 19:00, weekdays 09:00, mon,fri 10:00, or hourly.</p><label>Time zone<input name="timezone" required value="${attribute(Intl.DateTimeFormat().resolvedOptions().timeZone)}"></label><details class="creation-options"><summary>Link to a project or task (optional)</summary><label>Project (optional)<select name="project"><option value="">Outside projects</option>${store.data.projects.map(project => `<option value="${attribute(project.id)}">${escapeHtml(project.title)}</option>`).join('')}</select></label><label>Task (optional)<select name="task"><option value="">No task</option>${store.data.tasks.map(task => `<option value="${attribute(task.id)}">${escapeHtml(task.title)} · ${escapeHtml(task.project)}</option>`).join('')}</select></label></details><button type="submit" class="primary-button">Add reminder</button></form>`;
+}
+function renderReminders() {
+  const reminders = store.data.reminders.filter(reminder => {
+    const params = store.route.params;
+    return (!params.get('q') || `${reminder.title} ${reminder.message}`.toLowerCase().includes(params.get('q').toLowerCase()))
+      && (!params.get('project') || reminder.project === params.get('project'))
+      && (!params.get('status') || params.get('status').split(',').includes(reminder.status))
+      && (!params.get('area') || store.data.projects.find(project => project.id === reminder.project)?.area === params.get('area'));
+  });
+  return pageHeading('Reminders', 'A prompt to act, at the time you choose.', creationButton('reminder', 'New reminder')) +
+    ['scheduled', 'sent', 'cancelled'].map(status => {
+      const items = reminders.filter(reminder => reminder.status === status);
+      return section(status[0].toUpperCase() + status.slice(1), items.length ? items.map(reminder => `<article class="reminder-card"><h3>${escapeHtml(reminder.title)}</h3>${reminder.message !== reminder.title ? `<p>${escapeHtml(reminder.message)}</p>` : ''}<p class="count">${escapeHtml(reminderDate(reminder, reminder.nextAt || reminder.lastSent))} · ${escapeHtml(reminder.timezone)}${reminder.every ? ' · ' + escapeHtml(reminder.every) : ''}</p>${reminder.task || reminder.project ? `<button class="text-button" data-open="${attribute(reminder.task || reminder.project)}">${escapeHtml(reminder.task || reminder.project)}</button>` : ''}${reminder.lastError ? `<p role="alert">${escapeHtml(reminder.lastError)}</p>` : ''}<div class="reminder-actions">${status === 'scheduled' ? `<button class="secondary-button" data-action="cancel-reminder" data-id="${attribute(reminder.id)}">Cancel reminder</button>` : ''}<button class="text-button" data-document="${attribute(reminder.id + '/log.md')}">View history</button></div></article>`).join('') : '<p class="empty-inline">No ' + status + ' reminders.</p>', items.length);
+    }).join('');
+}
+let creationOpener = null;
+function openCreationDialog(kind, opener) {
+  closePopover(false);
+  closePalette(false);
+  const dialog = element('creation-dialog');
+  const project = opener?.dataset.project || store.route.params.get('project') || '';
+  const title = { collection: 'New collection', note: 'New note', reminder: 'New reminder' }[kind];
+  const form = kind === 'collection' ? collectionForm(project) : kind === 'note' ? noteForm() : reminderForm();
+  creationOpener = { element: opener, action: opener?.dataset.action, project: opener?.dataset.project };
+  dialog.innerHTML = `<header class="creation-dialog-header"><h2 id="creation-dialog-title">${title}</h2><button type="button" class="icon-button" data-action="close-creation" aria-label="Close ${title.toLowerCase()}">${icon('close')}</button></header>${form}`;
+  const formElement = dialog.querySelector('form');
+  const submit = formElement.querySelector('[type="submit"]');
+  const footer = document.createElement('div');
+  footer.className = 'creation-dialog-footer';
+  footer.innerHTML = '<button type="button" class="secondary-button" data-action="close-creation">Cancel</button>';
+  footer.append(submit);
+  const error = document.createElement('p');
+  error.className = 'creation-error';
+  error.id = 'creation-error';
+  error.setAttribute('role', 'alert');
+  error.tabIndex = -1;
+  formElement.append(error, footer);
+  dialog.showModal();
+  formElement.querySelector(kind === 'reminder' ? '[name="message"]' : '[name="title"]').focus();
+}
+function closeCreationDialog() {
+  const dialog = element('creation-dialog');
+  if (!dialog.open) return;
+  dialog.close();
+  const opener = creationOpener;
+  const replacement = opener?.action ? [...document.querySelectorAll(`[data-action="${opener.action}"]`)].find(button => !opener.project || button.dataset.project === opener.project) : null;
+  (opener?.element?.isConnected ? opener.element : replacement)?.focus();
+}
+async function saveV2Form(form) {
+  const button = form.querySelector('[type="submit"]');
+  if (button.disabled) return;
+  const values = Object.fromEntries([...new FormData(form)].filter(([, value]) => String(value).trim()));
+  delete values['reminder-mode'];
+  values.slug = slugify(values.title || values.message) + '-' + Date.now().toString(36);
+  const route = ({ 'collection-form': 'collection', 'note-form': 'note', 'reminder-form': 'reminder' })[form.id];
+  if (route === 'reminder' && Boolean(values.at) === Boolean(values.every)) { form.querySelector('.creation-error').textContent = 'Set either a date and time or a repeat schedule.'; return; }
+  form.querySelector('.creation-error').textContent = '';
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = 'Saving…';
+  form.setAttribute('aria-busy', 'true');
+  try {
+    const result = await api.post('/api/' + route, values);
+    if (element('creation-dialog').contains(form)) closeCreationDialog();
+    await loadState({ force: true });
+    showToast(result.warnings?.length ? 'Saved. Scheduling needs attention: ' + result.warnings.join('; ') : 'Saved.');
+  } catch (error) {
+    const message = form.querySelector('.creation-error');
+    if (form.isConnected) { message.textContent = error.message; message.focus(); }
+    else showToast(error.message, null, { error: true });
+  }
+  finally { button.disabled = false; button.textContent = originalLabel; form.removeAttribute('aria-busy'); }
+}
+async function cancelReminder(id) {
+  const key = 'cancel:' + id;
+  if (store.pending.has(key)) return;
+  store.pending.add(key);
+  try {
+    const result = await api.post('/api/reminder/cancel', { id });
+    await loadState({ force: true });
+    showToast(result.warnings?.length ? 'Cancelled. Scheduling needs attention: ' + result.warnings.join('; ') : 'Reminder cancelled.');
+  } catch (error) { showToast(error.message, null, { error: true }); }
+  finally { store.pending.delete(key); }
 }
 function renderDue() {
   const entries = [...store.data.tasks.filter(task => !closedStatuses.includes(task.status)), ...store.data.projects.filter(project => !closedStatuses.includes(project.status)).map(project => ({ ...project, type: 'project' }))].filter(matchesFilters);
@@ -332,9 +443,9 @@ function eventMatches(event, ignoreDay = false) {
   return matchesFilters(entry);
 }
 function renderEvent(event) {
-  const entryId = event.task || event.project;
-  const title = event.taskTitle || getEntry(entryId)?.title || event.projectTitle || event.project;
-  return `<div class="event-row"><time class="event-time" title="${attribute(event.at)}">${escapeHtml(event.at.slice(11, 16) || '')}</time><span class="event-icon">${icon(event.event.includes('status') ? 'circle' : 'activity')}</span><div class="event-copy"><button data-open="${attribute(entryId)}">${escapeHtml(title)}</button> <span>${escapeHtml(event.event)}</span><p>${escapeHtml(event.projectTitle || event.project)}${event.detail ? ` · ${escapeHtml(event.detail)}` : ''}</p></div></div>`;
+  const entryId = event.entry || event.task || event.project;
+  const title = event.entryTitle || event.taskTitle || getEntry(entryId)?.title || event.projectTitle || event.project;
+  return `<div class="event-row"><time class="event-time" title="${attribute(event.at)}">${escapeHtml(event.at.slice(11, 16) || '')}</time><span class="event-icon">${icon(event.event.includes('status') ? 'circle' : 'activity')}</span><div class="event-copy"><button ${event.reminder ? `data-document="${attribute(event.reminder + '/log.md')}"` : `data-open="${attribute(entryId)}"`}>${escapeHtml(event.reminder ? event.detail || 'Reminder' : title)}</button> <span>${escapeHtml(event.event)}</span><p>${escapeHtml(event.projectTitle || event.project)}${event.detail ? ` · ${escapeHtml(event.detail)}` : ''}</p></div></div>`;
 }
 function renderActivity() {
   const events = store.data.events.filter(event => eventMatches(event));
@@ -391,7 +502,7 @@ function renderTimeline() {
   const tab = params.get('tab') || 'activity';
   const range = params.get('range') || '7d';
   const rangeControls = `<div class="view-controls"><div class="segmented" aria-label="Activity range">${[['7d', '7 days'], ['30d', '30 days'], ['month', 'Month'], ['custom', 'Custom']].map(([value, label]) => `<button data-filter="range" data-value="${value}" aria-pressed="${range === value}">${label}</button>`).join('')}</div>${range === 'month' ? `<input type="month" aria-label="Activity month" data-query="month" value="${attribute(params.get('month') || today().slice(0, 7))}">` : range === 'custom' ? `<div class="custom-range"><input type="date" data-query="from" aria-label="Range from" value="${attribute(params.get('from') || addDays(today(), -6))}"><span class="count">to</span><input type="date" data-query="to" aria-label="Range to" value="${attribute(params.get('to') || today())}"></div>` : ''}<select data-query="project" aria-label="Filter by project"><option value="">All projects</option>${store.data.projects.map(project => `<option value="${attribute(project.id)}" ${params.get('project') === project.id ? 'selected' : ''}>${escapeHtml(project.title)}</option>`).join('')}</select>${params.get('day') ? `<button class="filter-button active" data-filter="day" data-value="">${formatDate(params.get('day'))}${icon('close')}</button>` : ''}</div>`;
-  return pageHeading('Timeline', 'See where your time has gone.') + `<div class="tabs" role="tablist" aria-label="Timeline view"><button class="tab" role="tab" id="activity-tab" aria-controls="timeline-panel" aria-selected="${tab === 'activity'}" data-filter="tab" data-value="activity">Activity</button><button class="tab" role="tab" id="lanes-tab" aria-controls="timeline-panel" aria-selected="${tab === 'lanes'}" data-filter="tab" data-value="lanes">Lanes</button></div>` + `<div id="timeline-panel" role="tabpanel" aria-labelledby="${tab === 'lanes' ? 'lanes-tab' : 'activity-tab'}">${tab === 'lanes' ? renderLanes() : rangeControls + renderWeekStrip() + (store.refreshing ? skeletonRows() : renderActivity())}</div>`;
+  return pageHeading('Timeline', 'See what changed and what you worked on.') + `<div class="tabs" role="tablist" aria-label="Timeline view"><button class="tab" role="tab" id="activity-tab" aria-controls="timeline-panel" aria-selected="${tab === 'activity'}" data-filter="tab" data-value="activity">Activity</button><button class="tab" role="tab" id="lanes-tab" aria-controls="timeline-panel" aria-selected="${tab === 'lanes'}" data-filter="tab" data-value="lanes">Lanes</button></div>` + `<div id="timeline-panel" role="tabpanel" aria-labelledby="${tab === 'lanes' ? 'lanes-tab' : 'activity-tab'}">${tab === 'lanes' ? renderLanes() : rangeControls + renderWeekStrip() + (store.refreshing ? skeletonRows() : renderActivity())}</div>`;
 }
 function runLogPath(job, file) {
   const relativeDir = store.entries.get(job.id)?.relativeDir || `projects/${job.project}/tasks/${job.id.split('/').slice(1).join('/')}`;
@@ -420,8 +531,8 @@ function renderNavigation() {
   const current = store.route.view === 'project' ? 'projects' : store.route.view;
   element('navigation').innerHTML = navigation.map(([view, label]) => {
     const count = view === 'home' ? store.data?.tasks.filter(task => ['doing', 'todo'].includes(task.status)).length : view === 'inbox' ? store.notes?.length : null;
-    return `<a class="nav-link" href="${routeUrl(view, { context: null, note: null, doc: null, runlog: null, full: null, selected: null })}" title="${label}" ${current === view ? 'aria-current="page"' : ''}>${icon(view)}<span class="nav-label">${label}</span>${count ? `<span class="nav-count">${count}</span>` : ''}</a>`;
-  }).join('');
+    return `<a class="nav-link ${['home', 'projects', 'collections', 'reminders'].includes(view) ? '' : 'mobile-secondary'}" href="${routeUrl(view, { context: null, note: null, doc: null, runlog: null, full: null, selected: null })}" title="${label}" ${current === view ? 'aria-current="page"' : ''}>${icon(view)}<span class="nav-label">${label}</span>${count ? `<span class="nav-count">${count}</span>` : ''}</a>`;
+  }).join('') + `<button class="nav-link mobile-more" data-popover="mobile-navigation" aria-haspopup="dialog" ${!['home', 'projects', 'collections', 'reminders'].includes(current) ? 'aria-current="page"' : ''}>${icon('more')}<span class="nav-label">More</span></button>`;
   const dark = document.documentElement.dataset.theme === 'dark' || !document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches;
   element('theme-toggle').innerHTML = icon(dark ? 'sun' : 'moon');
   element('theme-toggle').setAttribute('aria-label', `Use ${dark ? 'light' : 'dark'} theme`);
@@ -442,7 +553,7 @@ function render() {
   const mainScroll = window.scrollY;
   renderNavigation();
   renderTopbar();
-  const viewRenderers = { home: renderHome, projects: renderProjects, project: renderProjectPage, due: renderDue, timeline: renderTimeline, jobs: renderJobs, inbox: renderInbox };
+  const viewRenderers = { home: renderHome, projects: renderProjects, project: renderProjectPage, due: renderDue, timeline: renderTimeline, jobs: renderJobs, inbox: renderInbox, collections: renderCollections, reminders: renderReminders };
   const title = store.route.view === 'project' ? getEntry(store.route.projectContext || store.route.id)?.title || 'Project' : navigation.find(([view]) => view === store.route.view)?.[1] || 'Home';
   document.title = `2b — ${title}`;
   const error = store.error ? `<div class="banner" role="alert">${icon('warning')}<span>${escapeHtml(store.error)}</span><button class="text-button" data-action="reload">Try again</button></div>` : '';
@@ -493,6 +604,7 @@ function renderJobActions(task) {
     <button class="secondary-button" data-popover="delete" ${running ? 'disabled' : ''} data-id="${attribute(task.id)}">${icon('trash')}Delete job</button></div>`;
 }
 function renderTaskDetail(entry) {
+  if (['collection', 'note'].includes(entry.kind)) return `<h1>${escapeHtml(entry.fields.title)}</h1><p class="count">${escapeHtml(entry.kind)} · ${escapeHtml(entry.project || entry.id.split('/')[0])}</p>${renderDescription(entry)}${entry.kind === 'collection' ? section('Notes', contentList(entry.notes || []), entry.notes?.length || 0) : ''}${renderArtifactGroups(entry)}${renderLinks(entry)}${renderTaskLog(entry.log)}`;
   const task = getEntry(entry.id);
   const fields = entry.fields || {};
   const recurring = task.kind === 'recurring' || fields.kind === 'recurring' || entry.job;
@@ -538,7 +650,7 @@ function renderDrawer() {
   } else if (store.entryErrors.has(id)) body = renderEntryError(id);
   else if (!entry) { ensureEntry(id); body = skeletonRows(); }
   else body = renderTaskDetail(entry);
-  root.innerHTML = `<aside class="drawer ${entering ? 'is-entering' : ''} ${params.get('full') === '1' ? 'full-page' : ''}" aria-label="${attribute(runlog ? 'Run log' : note ? 'Note detail' : 'Task detail')}"><header class="drawer-toolbar">${filePath && store.route.drawer ? `<button class="icon-button" data-action="document-back" aria-label="Back to task">${icon('left')}</button>` : ''}<span class="breadcrumb">${escapeHtml(title)}</span>${id && !filePath ? `<button class="icon-button" data-action="previous-task" aria-label="Previous task (k)">${icon('left')}</button><button class="icon-button" data-action="next-task" aria-label="Next task (j)">${icon('right')}</button>` : ''}<button class="text-button" data-filter="full" data-value="${params.get('full') === '1' ? '' : '1'}" aria-label="${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}">${icon('expand')}<span>${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}</span></button><button class="icon-button" data-action="close-drawer" aria-label="Close drawer (Escape)">${icon('close')}</button></header><div class="drawer-content" tabindex="-1">${body}</div></aside>`;
+  root.innerHTML = `<aside class="drawer ${entering ? 'is-entering' : ''} ${params.get('full') === '1' ? 'full-page' : ''}" aria-label="${attribute(runlog ? 'Run log' : note || getEntry(id)?.type === 'note' ? 'Note detail' : getEntry(id)?.type === 'collection' ? 'Collection detail' : 'Task detail')}"><header class="drawer-toolbar">${filePath && store.route.drawer ? `<button class="icon-button" data-action="document-back" aria-label="Back to entry">${icon('left')}</button>` : ''}<span class="breadcrumb">${escapeHtml(title)}</span>${id && !filePath && getEntry(id)?.type === 'task' ? `<button class="icon-button" data-action="previous-task" aria-label="Previous task (k)">${icon('left')}</button><button class="icon-button" data-action="next-task" aria-label="Next task (j)">${icon('right')}</button>` : ''}<button class="text-button" data-filter="full" data-value="${params.get('full') === '1' ? '' : '1'}" aria-label="${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}">${icon('expand')}<span>${params.get('full') === '1' ? 'Show drawer' : 'Open full page'}</span></button><button class="icon-button" data-action="close-drawer" aria-label="Close drawer (Escape)">${icon('close')}</button></header><div class="drawer-content" tabindex="-1">${body}</div></aside>`;
   root.querySelector('.drawer-content').scrollTop = oldKey === key ? scroll : 0;
   if (oldKey !== key || contentHadFocus || focusWasOnBody) requestAnimationFrame(() => root.querySelector('.drawer-content')?.focus({ preventScroll: true }));
 }
@@ -597,7 +709,7 @@ async function loadState({ force = false } = {}) {
     if (daysBetween(range.from, range.to) >= 400) throw new Error('Choose a date range of 400 days or less.');
     const data = await api.get(`/api/state?from=${range.from}&to=${range.to}`);
     if (sequence !== store.requestSequence) return;
-    store.data = { ...data, projects: data.projects || [], tasks: data.tasks || [], events: data.events || [], jobs: data.jobs || [], failed: data.failed || [] };
+    store.data = { ...data, projects: data.projects || [], tasks: data.tasks || [], events: data.events || [], collections: data.collections || [], notes: data.notes || [], reminders: data.reminders || [], jobs: data.jobs || [], failed: data.failed || [] };
   } catch (error) { if (sequence === store.requestSequence) store.error = error.message; }
   finally { if (sequence === store.requestSequence) { store.loading = false; store.refreshing = false; render(); } }
 }
@@ -798,7 +910,9 @@ function openPopover(type, anchor, id = '', extra = {}) {
   const entry = getEntry(id);
   const root = element('popover-root');
   let html = '';
-  if (['status', 'pause'].includes(type)) {
+  if (type === 'mobile-navigation') {
+    html = `<h2>More pages</h2>${navigation.filter(([view]) => !['home', 'projects', 'collections', 'reminders'].includes(view)).map(([view, label]) => `<button class="popover-option" data-view="${view}">${icon(view)}<span>${label}</span></button>`).join('')}`;
+  } else if (['status', 'pause'].includes(type)) {
     const statuses = isProject(entry) ? projectStatuses : entry?.kind === 'recurring' || entry?.fields?.kind === 'recurring' ? [...taskStatuses, 'paused'] : taskStatuses;
     const options = type === 'pause' ? ['paused'] : statuses;
     html = `<h2>${type === 'pause' ? 'Pause job' : 'Change status'}</h2><input class="popover-search" type="search" aria-label="Find status" placeholder="Find status…" autocomplete="off"><div class="popover-options">${options.map(status => `<button class="popover-option status-${status}" data-status-value="${status}" aria-pressed="${entry?.status === status}"><span>${icon(statusIcon(status))} ${status}</span>${entry?.status === status ? icon('check') : ''}</button>`).join('')}</div><form id="reason-form" hidden><label for="status-reason">Reason <span aria-hidden="true">(required)</span></label><textarea id="status-reason" name="reason" rows="3" required maxlength="2000" placeholder="What needs to change?"></textarea><button class="primary-button" type="submit">Apply status</button></form>`;
@@ -814,7 +928,7 @@ function openPopover(type, anchor, id = '', extra = {}) {
     const value = entry?.[field];
     html = `<h2>${type === 'reschedule' ? 'Reschedule overdue items' : isProject(entry) ? 'Set deadline' : 'Set due date'}</h2>${[['Today', today()], ['Tomorrow', addDays(today(), 1)], ['Next Monday', nextMonday], ['+1 week', addDays(dayPattern.test(value || '') ? value : today(), 7)], ['No date', ''], ['Unknown', 'unknown']].map(([label, date]) => `<button class="popover-option" data-due-value="${date}"><span>${label}</span><span class="count">${date && date !== 'unknown' ? formatDate(date) : ''}</span></button>`).join('')}<form id="due-form" class="popover-footer"><label for="due-date">Choose any date</label><input id="due-date" name="date" type="date" required value="${dayPattern.test(value || '') ? value : ''}"><p id="past-date-warning" class="notice" hidden>This date is in the past. You can still use it for a correction.</p><button class="primary-button" type="submit">${type === 'reschedule' ? 'Reschedule all' : 'Set date'}</button></form>`;
   } else if (type === 'status-filter') {
-    const statuses = [...new Set([...projectStatuses, ...taskStatuses])];
+    const statuses = store.route.view === 'reminders' ? ['scheduled', 'sent', 'cancelled'] : [...new Set([...projectStatuses, ...taskStatuses])];
     const selected = store.route.params.get('status')?.split(',') || [];
     html = `<h2>Filter by status</h2><button class="popover-option" data-status-filter="" aria-pressed="${!selected.length}">All statuses${!selected.length ? icon('check') : ''}</button>${statuses.map(status => `<button class="popover-option" data-status-filter="${status}" aria-pressed="${selected.includes(status)}"><span class="status-${status}">${icon(statusIcon(status))} ${status}</span>${selected.includes(status) ? icon('check') : ''}</button>`).join('')}`;
   } else if (type === 'priority-filter') {
@@ -910,7 +1024,7 @@ function paletteItems() {
   if (document.querySelector('.toast button:not(:disabled)')) items.push({ label: 'Undo latest change', icon: 'restore', key: '⌘ Z', run: undoLatestChange, group: 'Actions' });
   items.push({ label: 'Change theme', icon: 'sun', run: toggleTheme, group: 'Workspace' }, { label: 'Keyboard shortcuts', icon: 'help', key: '?', run: openShortcutSheet, group: 'Workspace' }, { label: 'Restore a deleted job…', icon: 'restore', run: () => openPopover('trash', element('topbar')), group: 'Actions' });
   if (store.route.params.get('note')) items.push({ label: 'Turn this note into a task…', icon: 'arrow', run: () => openPopover('convert', element('topbar'), '', { notePath: store.route.params.get('note') }), group: 'Actions' });
-  if (entry) {
+  if (entry && !['collection', 'note'].includes(entry.type)) {
     const anchor = () => document.querySelector(`[data-row="${CSS.escape(id)}"]`) || element('topbar');
     items.push(
       { label: `Change status · ${entry.title}`, icon: 'circle', key: 's', run: () => openPopover('status', anchor(), id), group: 'Selected item' },
@@ -954,7 +1068,7 @@ function closePalette(restoreFocus = true) {
 function openShortcutSheet() {
   closePopover(false);
   store.paletteReturnFocus = document.activeElement;
-  const shortcuts = [['Search dashboard', '/'], ['Commands and write actions', '⌘ K / Ctrl K'], ['Home / Projects / Due', 'g h / g p / g d'], ['Timeline / Jobs / Inbox', 'g t / g j / g i'], ['Next / previous item', 'j / k'], ['Open selected item', 'Enter'], ['Change status', 's'], ['Set due date or deadline', 'd'], ['Change priority', 'p'], ['Undo latest change', '⌘ Z / Ctrl Z'], ['Close drawer or popover', 'Esc'], ['Move in menus', '↑ / ↓'], ['Keyboard shortcuts', '?']];
+  const shortcuts = [['Search dashboard', '/'], ['Commands and write actions', '⌘ K / Ctrl K'], ['Home / Projects / Due', 'g h / g p / g d'], ['Timeline / Jobs / Inbox', 'g t / g j / g i'], ['Collections / Reminders', 'g c / g r'], ['Next / previous item', 'j / k'], ['Open selected item', 'Enter'], ['Change status', 's'], ['Set due date or deadline', 'd'], ['Change priority', 'p'], ['Undo latest change', '⌘ Z / Ctrl Z'], ['Close drawer or popover', 'Esc'], ['Move in menus', '↑ / ↓'], ['Keyboard shortcuts', '?']];
   element('palette-root').innerHTML = `<div class="palette-backdrop" data-palette-backdrop><section class="palette" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><header class="palette-header"><h2 style="flex:1">Keyboard shortcuts</h2><button class="icon-button" data-action="theme">${icon('sun')}<span class="sr-only">Change theme</span></button><button class="icon-button" data-action="close-palette" aria-label="Close keyboard shortcuts">${icon('close')}</button></header><div class="shortcut-list">${shortcuts.map(([label, key]) => `<span>${label}</span><kbd>${key}</kbd>`).join('')}</div><p class="count" style="padding:.75rem .5rem">Select a row first to change it. All actions are also in the command palette.</p></section></div>`;
   requestAnimationFrame(() => element('palette-root').querySelector('button').focus());
 }
@@ -1026,6 +1140,11 @@ async function copyText(text) {
   catch { showToast('Copy is unavailable. Select the instruction and copy it.'); }
 }
 const clickActions = {
+  'new-collection': control => openCreationDialog('collection', control),
+  'new-note': control => openCreationDialog('note', control),
+  'new-reminder': control => openCreationDialog('reminder', control),
+  'close-creation': closeCreationDialog,
+  'cancel-reminder': control => cancelReminder(control.dataset.id),
   palette: openPalette, shortcuts: openShortcutSheet, 'close-palette': closePalette, 'close-popover': closePopover,
   'close-drawer': closeDrawer, 'next-task': () => moveSelection(1), 'previous-task': () => moveSelection(-1), theme: toggleTheme,
   reload: () => loadState({ force: true }), 'reload-inbox': () => loadInbox(true),
@@ -1085,11 +1204,20 @@ document.addEventListener('input', event => {
   if (input.id === 'task-title') element('task-slug').value = slugify(input.value);
 });
 document.addEventListener('change', event => {
+  if (event.target.name === 'reminder-mode') {
+    const mode = event.target.value;
+    event.target.form.querySelectorAll('[data-schedule-field]').forEach(field => {
+      field.hidden = field.dataset.scheduleField !== mode;
+      const input = field.querySelector('input');
+      if (input) { input.disabled = field.hidden; input.required = !field.hidden; }
+    });
+  }
   if (event.target.dataset.query) setFilter(event.target.dataset.query, event.target.value);
 });
 document.addEventListener('submit', event => {
   event.preventDefault();
   const form = event.target;
+  if (['collection-form', 'note-form', 'reminder-form'].includes(form.id)) { saveV2Form(form); return; }
   const values = new FormData(form);
   if (form.id === 'reason-form') {
     const reason = String(values.get('reason')).trim();
@@ -1117,6 +1245,11 @@ let goPrefixUntil = 0;
 document.addEventListener('keydown', event => {
   if (event.isComposing) return;
   const key = event.key;
+  if (element('creation-dialog').open) {
+    if (key === 'Tab') trapFocus(event, element('creation-dialog'));
+    if (key === 'Escape') { event.preventDefault(); closeCreationDialog(); }
+    return;
+  }
   const eventTarget = event.target instanceof Element ? event.target : document.body;
   if ((event.metaKey || event.ctrlKey) && key.toLowerCase() === 'z' && !eventTarget.closest('input, textarea, [contenteditable="true"]') && document.querySelector('.toast button:not(:disabled)')) { event.preventDefault(); undoLatestChange(); return; }
   if ((event.metaKey || event.ctrlKey) && key.toLowerCase() === 'k') { event.preventDefault(); openPalette(); return; }
@@ -1150,11 +1283,17 @@ document.addEventListener('keydown', event => {
   const popoverType = { s: 'status', d: 'due', p: 'priority' }[key];
   if (popoverType) {
     const id = currentEntryId();
-    if (getEntry(id)) { event.preventDefault(); openPopover(popoverType, document.activeElement.closest('[data-row]') || element('drawer-root').querySelector(`[data-popover="${popoverType}"]`) || document.activeElement, id); }
+    if (getEntry(id) && !['collection', 'note'].includes(getEntry(id).type)) { event.preventDefault(); openPopover(popoverType, document.activeElement.closest('[data-row]') || element('drawer-root').querySelector(`[data-popover="${popoverType}"]`) || document.activeElement, id); }
     else element('announcer').textContent = 'Select a task or project first.';
   }
 });
-window.addEventListener('hashchange', routeChanged);
+element('creation-dialog').addEventListener('click', event => {
+  if (event.target !== event.currentTarget) return;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeCreationDialog();
+});
+element('creation-dialog').addEventListener('cancel', event => { event.preventDefault(); closeCreationDialog(); });
+window.addEventListener('hashchange', () => { closeCreationDialog(); routeChanged(); });
 window.addEventListener('resize', positionPopover);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderNavigation);
 element('theme-toggle').onclick = toggleTheme;
