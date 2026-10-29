@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   AREAS, DATE, LINK_TYPES, PROJECT_PRIORITIES, TASK_PRIORITIES, PROJECT_STATUSES, REASON_REQUIRED, TASK_STATUSES, assertSlug, readEntry,
-  type Entry, type Kind, type Link,
+  NOTE_TYPES, type Entry, type Kind, type Link,
 } from './store.ts';
+import { readReminder, assertTimezone } from './reminders.ts';
 import { parseEvery } from './schedule.ts';
 
 function subfolders(dir: string): string[] {
@@ -28,7 +29,7 @@ function readOrReport(kind: Kind, project: string, dir: string, problems: string
   }
 }
 
-function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
+function checkEntry(entry: Entry, knownIds: Set<string>, entries: Entry[]): string[] {
   const problems: string[] = [];
   const report = (message: string) => problems.push(`${entry.id}: ${message}`);
   const { fields } = entry;
@@ -46,7 +47,7 @@ function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
   }
   const statuses = entry.kind === 'project' ? PROJECT_STATUSES : TASK_STATUSES;
   const status = String(fields.status);
-  if (!statuses.includes(status)) report(`status "${status}" is not one of ${statuses.join(', ')}`);
+  if (['project', 'task'].includes(entry.kind) && !statuses.includes(status)) report(`status "${status}" is not one of ${statuses.join(', ')}`);
   if (REASON_REQUIRED.includes(status) && !fields['status-reason']) report(`status "${status}" needs status-reason`);
   if (entry.kind === 'project' && !AREAS.includes(String(fields.area))) report(`area "${fields.area}" is not one of ${AREAS.join(', ')}`);
   for (const dateField of ['deadline', 'due']) {
@@ -63,6 +64,8 @@ function checkEntry(entry: Entry, knownIds: Set<string>): string[] {
   for (const artifact of (Array.isArray(fields.artifacts) ? fields.artifacts : []) as { path: string }[]) {
     if (!fs.existsSync(path.join(entry.dir, artifact.path))) report(`artifact "${artifact.path}" is missing`);
   }
+  if (fields.output && !entries.some(target => target.id === fields.output && target.kind === 'collection' && target.project === entry.project)) report('output must be a collection in this project');
+  if (entry.kind === 'note' && !NOTE_TYPES.includes(String(fields['note-type']))) report('invalid note type');
   if (fields.kind === 'recurring') {
     if (fields.run === 'command' && !String(fields.command ?? '').trim()) report('no command set');
     if (fields.run === 'agent' && !entry.body.trim()) report('agent task has an empty body');
@@ -88,6 +91,31 @@ export function checkStore(root: string): string[] {
       if (task) entries.push(task);
     }
   }
+  for (const projectSlug of subfolders(projectsDir)) {
+    const collectionsDir = path.join(projectsDir, projectSlug, 'collections');
+    for (const collectionSlug of subfolders(collectionsDir)) {
+      const dir = path.join(collectionsDir, collectionSlug);
+      const collection = readOrReport('collection', projectSlug, dir, problems);
+      if (collection) entries.push(collection);
+      for (const noteSlug of subfolders(path.join(dir, 'notes'))) {
+        const note = readOrReport('note', projectSlug, path.join(dir, 'notes', noteSlug), problems);
+        if (note) entries.push(note);
+      }
+    }
+  }
+  for (const slug of subfolders(path.join(root, 'reminders'))) {
+    try {
+      const reminder = readReminder(root, slug);
+      if (!reminder.message || !reminder.title) throw new Error('missing message or title');
+      if (Boolean(reminder.at) === Boolean(reminder.every)) throw new Error('needs one of at or every');
+      assertTimezone(reminder.timezone);
+      if (!['scheduled', 'sent', 'cancelled'].includes(reminder.status)) throw new Error('invalid status');
+      if (reminder.every) parseEvery(reminder.every);
+      if (reminder.status === 'scheduled' && (!reminder.nextAt || !Number.isFinite(Date.parse(reminder.nextAt)))) throw new Error('missing or invalid nextAt');
+      if (reminder.project && !entries.some(entry => entry.kind === 'project' && entry.id === reminder.project)) throw new Error('missing project');
+      if (reminder.task && !entries.some(entry => entry.kind === 'task' && entry.id === reminder.task && entry.project === reminder.project)) throw new Error('missing task or mismatched project');
+    } catch (error) { problems.push(`reminders/${slug}: ${(error as Error).message}`); }
+  }
   const knownIds = new Set(entries.map(entry => entry.id));
-  return [...problems, ...entries.flatMap(entry => checkEntry(entry, knownIds))];
+  return [...problems, ...entries.flatMap(entry => checkEntry(entry, knownIds, entries))];
 }

@@ -15,26 +15,30 @@ export const TASK_PRIORITIES = ['high', 'med', 'low'];
 export const PRIORITY_LABELS: Record<string, string> = { P1: '🔥 P1', P2: '⚡ P2', P3: '🎯 P3', P4: '🌱 P4', P5: '💤 P5', high: 'high', med: 'med', low: 'low' };
 export const CLOSED_STATUSES = ['done', 'archived', 'dropped'];
 export const REASON_REQUIRED = ['paused', 'on-hold', 'blocked', 'dropped'];
-export const LINK_TYPES = ['depends-on', 'follow-up', 'related'];
+export const LINK_TYPES = ['depends-on', 'follow-up', 'related', 'produces', 'produced-by'];
 export const DATE = /^\d{4}-\d{2}-\d{2}$/;
 export const CLI_PATH = path.join(import.meta.dirname, 'cli.ts');
 // ponytail: Node 22 needs the flag; drop it on Node 23.6+
 export const NODE_COMMAND = [process.execPath, '--experimental-strip-types', '--no-warnings', CLI_PATH];
 
+export const NOTE_TYPES = ['general', 'journal', 'reflection', 'learning', 'research', 'decision', 'meeting'];
 const SLUG = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}-/;
 const RECURRING_FIELDS = ['every', 'run', 'agent', 'command'];
 const SETTABLE_FIELDS = {
   project: ['title', 'area', 'started', 'deadline', 'priority'],
-  task: ['title', 'started', 'due', 'repo', 'branch', 'priority', ...RECURRING_FIELDS],
+  task: ['title', 'started', 'due', 'repo', 'branch', 'priority', 'output', ...RECURRING_FIELDS],
+  collection: ['title'],
+  note: ['title', 'note-type'],
 };
 
-export type Kind = 'project' | 'task';
+export type Kind = 'project' | 'task' | 'collection' | 'note';
 export type Entry = { kind: Kind; id: string; project: string; dir: string; fields: Fields; body: string };
 export type Artifact = { path: string; title: string; about: string; why: string; added: string };
 export type Link = { to: string; type: string };
 
 export function priorityOf(entry: Entry): string {
+  if (!['project', 'task'].includes(entry.kind)) return '';
   return String(entry.fields.priority ?? (entry.kind === 'project' ? 'P3' : 'med'));
 }
 
@@ -111,7 +115,10 @@ export function slugify(text: string): string {
 
 export function readEntry(kind: Kind, project: string, dir: string): Entry {
   const { fields, body } = parse(fs.readFileSync(path.join(dir, 'readme.md'), 'utf8'));
-  const id = kind === 'project' ? project : `${project}/${path.basename(dir)}`;
+  const marker = path.sep + 'collections' + path.sep;
+  const collectionPath = dir.slice(dir.lastIndexOf(marker) + marker.length);
+  const id = kind === 'project' ? project : kind === 'task' ? `${project}/${path.basename(dir)}`
+    : `${project}/collections/${collectionPath.split(path.sep).join('/')}`;
   return { kind, id, project, dir, fields, body };
 }
 
@@ -155,19 +162,81 @@ export function listTasks(root: string, project?: string): Entry[] {
   });
 }
 
+export function listCollections(root: string, project?: string): Entry[] {
+  return (project ? [project] : foldersWithReadme(path.join(root, 'projects'))).flatMap(slug => {
+    const dir = path.join(root, 'projects', slug, 'collections');
+    return foldersWithReadme(dir).map(folder => readEntry('collection', slug, path.join(dir, folder)));
+  });
+}
+
+export function listNotes(root: string, collection?: string): Entry[] {
+  return listCollections(root).filter(entry => !collection || entry.id === collection).flatMap(entry => {
+    const dir = path.join(entry.dir, 'notes');
+    return foldersWithReadme(dir).map(folder => readEntry('note', entry.project, path.join(dir, folder)));
+  });
+}
+
+export function createCollection(root: string, project: string, slug: string, options: { title?: string; body?: string } = {}): Entry {
+  assertSlug(slug, 'collection');
+  const parent = resolve(root, project);
+  if (parent.kind !== 'project') throw new UserError('collection parent must be a project');
+  const dir = path.join(parent.dir, 'collections', slug);
+  if (fs.existsSync(dir)) throw new UserError(`collection "${slug}" already exists`);
+  fs.mkdirSync(path.join(dir, 'notes'), { recursive: true });
+  const title = options.title ?? slug;
+  const entry: Entry = { kind: 'collection', id: `${parent.id}/collections/${slug}`, project: parent.id, dir,
+    fields: { title, created: localDateTime(), links: [], artifacts: [] }, body: `\n# ${title}\n\n${options.body ?? ''}\n` };
+  writeEntry(entry);
+  appendLog(entry.dir, 'collection created', title);
+  return entry;
+}
+
+export function outputSource(root: string, source?: string): Entry | null {
+  if (!source) return null;
+  const task = resolve(root, source);
+  if (task.kind !== 'task') throw new UserError('source must be a task or job');
+  return task;
+}
+
+export function linkOutput(root: string, source: Entry, output: Entry): void {
+  if (source.id === output.id) return;
+  addLink(root, source, output.id, 'produces');
+  addLink(root, output, source.id, 'produced-by');
+}
+
+export function createCollectionNote(root: string, collection: string, slug: string,
+  options: { title?: string; body?: string; type?: string; source?: string } = {}): Entry {
+  assertSlug(slug, 'note');
+  const parent = resolve(root, collection);
+  if (parent.kind !== 'collection') throw new UserError('note parent must be a collection');
+  if (options.type) assertOneOf(options.type, NOTE_TYPES, 'note type');
+  const source = outputSource(root, options.source);
+  const dir = path.join(parent.dir, 'notes', slug);
+  if (fs.existsSync(dir)) throw new UserError(`note "${slug}" already exists`);
+  fs.mkdirSync(dir, { recursive: true });
+  const title = options.title ?? slug;
+  const entry: Entry = { kind: 'note', id: `${parent.id}/notes/${slug}`, project: parent.project, dir,
+    fields: { title, created: localDateTime(), 'note-type': options.type ?? 'general', collection: parent.id, links: [], artifacts: [] },
+    body: `\n# ${title}\n\n${options.body ?? ''}\n` };
+  writeEntry(entry);
+  appendLog(entry.dir, 'note created', title);
+  if (source) linkOutput(root, source, entry);
+  return entry;
+}
+
 export function listEntries(root: string): Entry[] {
-  return [...listProjects(root), ...listTasks(root)];
+  return [...listProjects(root), ...listTasks(root), ...listCollections(root), ...listNotes(root)];
 }
 
 export function resolve(root: string, ref: string): Entry {
   const project = listProjects(root).find(entry => entry.id === ref);
   if (project) return project;
-  const tasks = listTasks(root);
-  const exact = tasks.filter(task => task.id === ref || path.basename(task.dir) === ref);
-  const matches = exact.length > 0 ? exact : tasks.filter(task => task.id.includes(ref));
+  const candidates = [...listTasks(root), ...listCollections(root), ...listNotes(root)];
+  const exact = candidates.filter(task => task.id === ref || path.basename(task.dir) === ref);
+  const matches = exact.length > 0 ? exact : candidates.filter(task => task.id.includes(ref));
   if (matches.length === 1) return matches[0];
-  if (matches.length === 0) throw new UserError(`no project or task matches "${ref}"`);
-  throw new UserError(`"${ref}" matches more than one task:\n${matches.map(task => `  ${task.id}`).join('\n')}`);
+  if (matches.length === 0) throw new UserError(`no project or task, collection, or note matches "${ref}"`);
+  throw new UserError(`"${ref}" matches more than one entry:\n${matches.map(task => `  ${task.id}`).join('\n')}`);
 }
 
 export function appendLog(dir: string, event: string, detail = '', at = localDateTime()): void {
@@ -205,7 +274,7 @@ export function createProject(root: string, slug: string, options: ProjectOption
 
 export type TaskOptions = {
   title?: string; priority?: string; due?: string; repo?: string; branch?: string; started?: string; body?: string;
-  every?: string; run?: string; agent?: string; command?: string;
+  every?: string; run?: string; agent?: string; command?: string; output?: string;
 };
 
 export function createTask(root: string, project: string, slug: string, options: TaskOptions = {}): Entry {
@@ -215,6 +284,8 @@ export function createTask(root: string, project: string, slug: string, options:
   if (!fs.existsSync(path.join(projectDir, 'readme.md'))) throw new UserError(`project "${project}" does not exist`);
   if (options.due) assertDay(options.due, 'due');
   if (options.priority !== undefined) assertOneOf(options.priority, TASK_PRIORITIES, 'task priority');
+  const output = options.output ? resolve(root, options.output) : null;
+  if (output && (output.kind !== 'collection' || output.project !== project)) throw new UserError('output must be a collection in this project');
   const started = options.started ?? localDate();
   const folder = DATE_PREFIX.test(slug) ? slug : `${started}-${slug}`;
   const dir = path.join(projectDir, 'tasks', folder);
@@ -224,7 +295,7 @@ export function createTask(root: string, project: string, slug: string, options:
   const fields: Fields = {
     title, priority: options.priority ?? 'med', kind: isRecurring ? 'recurring' : 'normal', status: isRecurring ? 'doing' : 'todo', 'status-reason': null,
     started, due: options.due ?? null, repo: options.repo ?? null, branch: options.branch ?? null,
-    prs: [], resources: [], links: [], artifacts: [],
+    prs: [], resources: [], links: [], artifacts: [], output: output?.id ?? null,
   };
   if (isRecurring) {
     const run = options.run ?? 'agent';
@@ -247,6 +318,7 @@ export function createTask(root: string, project: string, slug: string, options:
 }
 
 export function setStatus(entry: Entry, status: string, reason?: string): void {
+  if (!['project', 'task'].includes(entry.kind)) throw new UserError('only projects and tasks have work status');
   assertOneOf(status, entry.kind === 'project' ? PROJECT_STATUSES : TASK_STATUSES, `${entry.kind} status`);
   if (REASON_REQUIRED.includes(status) && !reason) throw new UserError(`status "${status}" needs --reason`);
   const previous = entry.fields.status;
@@ -262,6 +334,7 @@ export function setField(entry: Entry, field: string, value: string): void {
     throw new UserError(`"${field}" is only for recurring tasks`);
   }
   if (field === 'priority') assertOneOf(value, entry.kind === 'project' ? PROJECT_PRIORITIES : TASK_PRIORITIES, `${entry.kind} priority`);
+  if (field === 'note-type') assertOneOf(value, NOTE_TYPES, 'note type');
   if (field === 'area') assertOneOf(value, AREAS, 'area');
   if (field === 'started') assertDay(value, 'started', false);
   if (field === 'deadline' || field === 'due') assertDay(value, field);
@@ -304,7 +377,7 @@ export function reverseLinks(root: string, id: string): { from: string; type: st
 }
 
 export function addArtifact(entry: Entry, source: string, meta: { title?: string; about?: string; why?: string }): string {
-  if (entry.kind !== 'task') throw new UserError('artifacts belong to a task; give a task id');
+  if (!['task', 'collection', 'note'].includes(entry.kind)) throw new UserError('artifacts belong to a task, collection, or note');
   const extension = path.extname(source).toLowerCase() || '.md';
   const baseName = path.basename(source, path.extname(source)).replace(DATE_PREFIX, '');
   const fileName = `${localDate()}-${slugify(baseName)}${extension}`;

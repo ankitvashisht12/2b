@@ -347,3 +347,11 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 
 h2, h3 { overflow-wrap: anywhere; }
 .toast > span, .palette-option > span { min-width: 0; overflow-wrap: anywhere; }
+
+.v2-form { display: grid; gap: 1rem; max-width: 38rem; padding: 1rem 0; }
+.v2-form label { display: grid; gap: .4rem; font-weight: 500; }
+.v2-form input, .v2-form select, .v2-form textarea { width: 100%; min-height: 2.6rem; padding: .6rem; border: 1px solid var(--line, #b8bfb9); border-radius: .5rem; color: inherit; background: var(--canvas, #fff); font: inherit; }
+.v2-form button { justify-self: start; }
+.reminder-card { padding: 1rem 0; border-bottom: 1px solid var(--line, #b8bfb9); overflow-wrap: anywhere; }
+.reminder-card h3 { margin: 0 0 .5rem; }
+.reminder-actions { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin-top: .75rem; }
