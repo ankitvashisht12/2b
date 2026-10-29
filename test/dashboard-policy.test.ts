@@ -23,3 +23,23 @@ test('schedule builder keeps existing syntax and context drafts distinct', () =>
   assert.notEqual(creationDraftKey('task', { project: 'work' }), creationDraftKey('task', { project: 'personal' }));
   assert.notEqual(creationDraftKey('capture', { folder: 'inbox' }), creationDraftKey('capture', { folder: 'learnings' }));
 });
+
+test('dashboard status choices match the store model for both filters and actions', async () => {
+  const { PROJECT_STATUSES, TASK_STATUSES } = await import('../src/store.ts');
+  const { projectStatuses, taskStatuses } = await import('../dash/policy.js');
+  assert.deepEqual(new Set(projectStatuses), new Set(PROJECT_STATUSES));
+  assert.deepEqual(new Set(taskStatuses), new Set(TASK_STATUSES));
+  assert.equal(new Set(taskStatuses).size, taskStatuses.length);
+  for (const view of ['jobs', 'project']) assert.deepEqual(new Set(viewPolicies[view].statuses), new Set(TASK_STATUSES));
+  assert.deepEqual(new Set(viewPolicies.projects.statuses), new Set(PROJECT_STATUSES));
+});
+
+test('body search excerpts expose a match without returning the full long document', async () => {
+  const { searchExcerpt } = await import('../dash/policy.js');
+  const body = 'Earlier content. '.repeat(200) + '<img src=x onerror=alert(1)> lighthouse findings' + ' Later content.'.repeat(200);
+  const excerpt = searchExcerpt(body, 'LIGHTHOUSE');
+  assert.match(excerpt, /lighthouse findings/);
+  assert(excerpt.length < 200);
+  assert.equal(searchExcerpt(body, 'missing-keyword'), '');
+  assert.equal(searchExcerpt(body, ''), '');
+});

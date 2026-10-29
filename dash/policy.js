@@ -1,5 +1,5 @@
-const projectStatuses = ['active', 'paused', 'on-hold', 'done', 'archived'];
-const taskStatuses = ['todo', 'doing', 'paused', 'on-hold', 'blocked', 'done', 'dropped'];
+export const projectStatuses = ['active', 'paused', 'on-hold', 'done', 'archived'];
+export const taskStatuses = ['todo', 'doing', 'blocked', 'done', 'dropped', 'paused'];
 const taskPriorities = ['high', 'med', 'low'];
 const projectPriorities = ['P1', 'P2', 'P3', 'P4', 'P5'];
 const mixedStatuses = [...new Set([...projectStatuses, ...taskStatuses])];
@@ -44,4 +44,14 @@ export function homeGroups(tasks, day) {
   const personal = tasks.filter(task => task.kind !== 'recurring');
   const overdue = personal.filter(task => !['done', 'dropped', 'archived'].includes(task.status) && /^\d{4}-\d{2}-\d{2}$/.test(task.due || '') && task.due < day);
   return { overdue, inProgress: personal.filter(task => task.status === 'doing' && !overdue.includes(task)), next: personal.filter(task => task.status === 'todo' && !overdue.includes(task)) };
+}
+
+export function searchExcerpt(body, query) {
+  const text = String(body || '').replace(/\s+/g, ' ').trim();
+  const search = String(query || '').trim().toLowerCase();
+  const match = search ? text.toLowerCase().indexOf(search) : -1;
+  if (match < 0) return '';
+  const start = Math.max(0, match - 50);
+  const end = Math.min(text.length, Math.max(start + 160, match + search.length));
+  return `${start ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }

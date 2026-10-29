@@ -1,4 +1,4 @@
-import { viewPolicies, normalizeFilters, transitionParams, creationDraftKey, scheduleValue, homeGroups } from './policy.js';
+import { projectStatuses, taskStatuses, searchExcerpt, viewPolicies, normalizeFilters, transitionParams, creationDraftKey, scheduleValue, homeGroups } from './policy.js';
 const element = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const attribute = escapeHtml;
@@ -66,8 +66,6 @@ const iconPaths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || iconPaths.file}</svg>`;
 const navigation = [['home', 'Home', 'h'], ['projects', 'Projects', 'p'], ['due', 'Due', 'd'], ['timeline', 'Timeline', 't'], ['jobs', 'Jobs', 'j'], ['collections', 'Collections', 'c'], ['reminders', 'Reminders', 'r'], ['inbox', 'Inbox', 'i']];
-const projectStatuses = ['active', 'paused', 'on-hold', 'done', 'archived'];
-const taskStatuses = ['todo', 'doing', 'blocked', 'done', 'dropped'];
 const projectPriorityLabels = { P1: '🔥 P1', P2: '⚡ P2', P3: '🎯 P3', P4: '🌱 P4', P5: '💤 P5' };
 function priorityLabel(priority) { return store.data?.projects.find(project => project.priority === priority)?.priorityLabel || projectPriorityLabels[priority] || priority; }
 function compactRelative(value) {
@@ -231,7 +229,7 @@ function renderHomeGroup(title, tasks, emptyCopy) {
   const visible = tasks.slice(0, 5);
   const remaining = tasks.slice(5);
   const rest = remaining.length ? `<details><summary>Show ${remaining.length} more</summary>${taskList(remaining)}</details>` : '';
-  return section(title, (visible.length ? taskList(visible) : `<p class="empty-inline">${emptyCopy}</p>`) + rest, tasks.length, '<button class="text-button" data-view="projects">All projects</button>');
+  return section(title, (visible.length ? taskList(visible) : `<p class="empty-inline">${emptyCopy}</p>`) + rest, tasks.length);
 }
 function renderHome() {
   const tasks = store.data.tasks.filter(task => task.kind !== 'recurring' && matchesFilters(task));
@@ -328,7 +326,7 @@ function renderProjectPage() {
   return pageHeading(project.title, '', `<button class="text-button" data-view="projects">${icon('left')} All projects</button>`) + metadata + renderDescription(entry) + section('Collections', contentList(entry.collections || []), entry.collections?.length || 0, creationButton('collection', 'New collection', id)) + section('Tasks', groups || (hasFilters() ? emptyFiltered() : '<p class="empty-inline">No tasks yet. Add one with <code>2b new task ' + escapeHtml(id) + ' task-slug --title "Task title"</code>.</p>'), tasks.length, creationButton('task', 'New task', id)) + renderLinks(entry) + section('Recent activity', renderRecentEvents(entry.recentEvents), entry.recentEvents?.length || 0);
 }
 function contentList(entries) {
-  return entries.length ? `<ul class="link-list">${entries.map(entry => `<li><button class="text-button" data-open="${attribute(entry.id)}">${icon(entry.type === 'collection' ? 'collections' : 'file')}${escapeHtml(entry.title)}</button>${entry['note-type'] ? ` <span class="count">${escapeHtml(entry['note-type'])}</span>` : ''}</li>`).join('')}</ul>` : '<p class="empty-inline">No content yet.</p>';
+  return entries.length ? `<ul class="link-list">${entries.map(entry => `<li><button class="text-button" data-open="${attribute(entry.id)}">${icon(entry.type === 'collection' ? 'collections' : 'file')}${escapeHtml(entry.title)}</button>${entry['note-type'] ? ` <span class="count">${escapeHtml(entry['note-type'])}</span>` : ''}${searchExcerpt(entry.body, store.route.params.get('q')) ? `<p class="search-excerpt">${escapeHtml(searchExcerpt(entry.body, store.route.params.get('q')))}</p>` : ''}</li>`).join('')}</ul>` : '<p class="empty-inline">No content yet.</p>';
 }
 function captureDestination(kind, selectedProject) {
   if (kind === 'capture') return '<label>Save to<select name="folder"><option value="inbox">Inbox</option><option value="learnings">Learnings</option></select></label>';
@@ -385,7 +383,7 @@ function renderCollections() {
     section('Collections', collections.length ? collections.map(collection => {
       const notes = store.data.notes.filter(note => note.collection === collection.id && (!store.route.params.get('q') || matchesFilters(note)));
       const project = store.data.projects.find(project => project.id === collection.project);
-      return `<section class="section"><h2><button class="text-button" data-open="${attribute(collection.id)}">${escapeHtml(collection.title)}</button></h2><p class="count">${escapeHtml(project?.title || collection.project)} · ${notes.length} matching notes</p>${contentList(notes)}</section>`;
+      return `<section class="section"><h2><button class="collection-title" data-open="${attribute(collection.id)}">${escapeHtml(collection.title)}</button></h2><p class="count">${escapeHtml(project?.title || collection.project)} · ${notes.length} ${store.route.params.get('q') ? 'matching ' : ''}${notes.length === 1 ? 'note' : 'notes'}</p>${contentList(notes)}</section>`;
     }).join('') : hasFilters() ? emptyFiltered() : '<p class="empty-inline">Create a collection to start saving notes.</p>', collections.length);
 
 }
@@ -415,7 +413,7 @@ function creationContext(kind, opener) {
   const context = { project: '', collection: '', folder: '' };
   if (['task', 'job', 'collection'].includes(kind)) context.project = opener?.dataset.project || store.route.params.get('project') || '';
   if (kind === 'note') context.collection = opener?.dataset.collection || '';
-  if (kind === 'capture') context.folder = store.route.params.get('folder') || 'inbox';
+  if (kind === 'capture') context.folder = store.route.params.get('folder') || '';
   return context;
 }
 function creationForm(kind, context) {
@@ -429,16 +427,21 @@ function rememberCreationDraft(form) {
   creationDrafts.set(form.dataset.draftKey, values);
 }
 function restoreCreationDraft(form, context) {
-  for (const saved of creationDrafts.get(form.dataset.draftKey) || []) {
+  const draft = creationDrafts.get(form.dataset.draftKey);
+  if (!draft) {
+    for (const [name, value] of Object.entries(context)) if (value && form.elements[name]) form.elements[name].value = value;
+    return;
+  }
+  for (const saved of draft) {
     const controls = [...form.elements].filter(control => control.name === saved.name);
     for (const control of controls) {
       if (control.type === 'checkbox') { if (control.value === saved.value) control.checked = saved.checked; }
       else control.value = saved.value;
     }
   }
-  for (const [name, value] of Object.entries(context)) if (value && form.elements[name]) form.elements[name].value = value;
 }
 function openCreationDialog(kind, opener) {
+  if (kind === 'job' && !store.data.projects.length) { openCreationDialog('project', opener); return; }
   closePopover(false);
   closePalette(false);
   const dialog = element('creation-dialog');
@@ -621,6 +624,7 @@ function runLogPath(job, file) {
   return file.startsWith('projects/') ? file : `${relativeDir}/${file.startsWith('runs/') ? file : `runs/${file}`}`;
 }
 function renderJobs() {
+  if (!store.data.projects.length) return pageHeading('Jobs', 'Recurring work, with a clear record of each run.') + emptyState('Create a project first', 'Jobs belong to a project. Create one, then add a scheduled job.', 'projects', creationButton('project', 'New project'));
   const jobs = store.data.jobs.filter(job => matchesFilters({ ...job, area: store.data.projects.find(project => project.id === job.project)?.area })).sort(compareTasks);
   const actions = `<div class="creation-actions">${creationButton('job', 'New job')}<button class="secondary-button" data-action="reload">Refresh</button><button class="secondary-button" data-popover="trash">Trash (${store.data.trash || 0})</button></div>`;
   const heading = pageHeading('Jobs', 'Recurring work, with a clear record of each run.', actions);
@@ -639,7 +643,7 @@ function renderInbox() {
   const query = (store.route.params.get('q') || '').toLowerCase();
   const folder = store.route.params.get('folder') || '';
   const notes = store.notes.filter(note => (!folder || note.folder === folder) && (!query || `${note.title} ${note.path} ${note.body || ''}`.toLowerCase().includes(query)));
-  return pageHeading('Inbox', 'Small thoughts, ready when you are.', creationButton('capture', 'Capture note')) + `<div class="segmented" aria-label="Note folder">${[['', 'All notes'], ['inbox', 'Inbox'], ['learnings', 'Learnings']].map(([value, label]) => `<button data-filter="folder" data-value="${value}" aria-pressed="${folder === value}">${label}</button>`).join('')}</div>` + (!notes.length ? query || folder ? emptyFiltered() : emptyState('A clear inbox', 'Capture a thought with the CLI. Open a note here to turn it into a task.', 'inbox', '<pre>2b dump a-thought --title "A thought to keep"</pre>') : `<section class="section" aria-label="Notes">${notes.map(note => `<div class="inbox-row" data-note-row="${attribute(note.path)}" tabindex="0">${icon(note.folder === 'learnings' ? 'file' : 'inbox')}<div class="inbox-copy"><button data-note="${attribute(note.path)}">${escapeHtml(note.title)}</button><p>${escapeHtml(note.folder)} · ${note.created ? escapeHtml(formatTimestamp(note.created)) : 'Date not recorded'}</p></div><button class="icon-button" data-convert="${attribute(note.path)}" aria-label="Turn ${attribute(note.title)} into a task">${icon('arrow')}</button></div>`).join('')}</section>`);
+  return pageHeading('Inbox', 'Small thoughts, ready when you are.', creationButton('capture', 'Capture note')) + `<div class="segmented" aria-label="Note folder">${[['', 'All notes'], ['inbox', 'Inbox'], ['learnings', 'Learnings']].map(([value, label]) => `<button data-filter="folder" data-value="${value}" aria-pressed="${folder === value}">${label}</button>`).join('')}</div>` + (!notes.length ? query || folder ? emptyFiltered() : emptyState('A clear inbox', 'Use Capture note to save a thought or learning. Open a saved note to turn it into a task.', 'inbox', creationButton('capture', 'Capture note')) : `<section class="section" aria-label="Notes">${notes.map(note => `<div class="inbox-row" data-note-row="${attribute(note.path)}" tabindex="0">${icon(note.folder === 'learnings' ? 'file' : 'inbox')}<div class="inbox-copy"><button data-note="${attribute(note.path)}">${escapeHtml(note.title)}</button><p>${escapeHtml(note.folder)} · ${note.created ? escapeHtml(formatTimestamp(note.created)) : 'Date not recorded'}</p></div><button class="icon-button" data-convert="${attribute(note.path)}" aria-label="Turn ${attribute(note.title)} into a task">${icon('arrow')}</button></div>`).join('')}</section>`);
 }
 function renderNavigation() {
   const current = store.route.view === 'project' ? 'projects' : store.route.view;
@@ -655,7 +659,7 @@ function renderNavigation() {
 function renderTopbar() {
   const params = store.route.params;
   const status = params.get('status');
-  element('topbar').innerHTML = `<div class="segmented" aria-label="Area">${[['', 'All'], ['work', 'Work'], ['personal', 'Personal']].map(([value, label]) => `<button data-filter="area" data-value="${value}" aria-pressed="${(params.get('area') || '') === value}">${label}</button>`).join('')}</div><div class="filter-group"><button class="filter-button ${status ? 'active' : ''}" data-popover="status-filter" aria-haspopup="dialog">${icon('filter')}${status ? escapeHtml(status.split(',').join(', ')) : 'Status'}${icon('chevron')}</button><button class="filter-button ${params.get('priority') ? 'active' : ''}" data-popover="priority-filter" aria-haspopup="dialog">${icon('priority')}${escapeHtml(params.get('priority') || 'Priority')}${icon('chevron')}</button></div><div class="search-wrap">${icon('search')}<input id="global-search" type="search" placeholder="Search ${viewPolicies[store.route.view].scope}" aria-label="Search ${viewPolicies[store.route.view].scope}" value="${attribute(params.get('q') || '')}" autocomplete="off"><kbd>/</kbd></div><button class="command-button" data-action="palette" aria-label="Command palette" title="Command palette (Command K)">${icon('command')}<span>K</span></button>`;
+  element('topbar').innerHTML = `<div class="segmented" aria-label="Area">${[['', 'All'], ['work', 'Work'], ['personal', 'Personal']].map(([value, label]) => `<button data-filter="area" data-value="${value}" aria-pressed="${(params.get('area') || '') === value}">${label}</button>`).join('')}</div><div class="filter-group"><button class="filter-button ${status ? 'active' : ''}" data-popover="status-filter" aria-haspopup="dialog">${icon('filter')}${status ? escapeHtml(status.split(',').join(', ')) : 'Status'}${icon('chevron')}</button><button class="filter-button ${params.get('priority') ? 'active' : ''}" data-popover="priority-filter" aria-haspopup="dialog">${icon('priority')}${escapeHtml(params.get('priority') || 'Priority')}${icon('chevron')}</button></div><div class="search-wrap">${icon('search')}<input id="global-search" type="search" placeholder="Search this page" aria-label="Search ${viewPolicies[store.route.view].scope}" value="${attribute(params.get('q') || '')}" autocomplete="off"><kbd>/</kbd></div><button class="command-button" data-action="palette" aria-label="Command palette" title="Command palette (Command K)">${icon('command')}<span>K</span></button>`;
   const supported = viewPolicies[store.route.view].filters;
   if (!supported.includes('area')) element('topbar').querySelector('[aria-label="Area"]').remove();
   for (const name of ['status', 'priority']) if (!supported.includes(name)) element('topbar').querySelector(`[data-popover="${name}-filter"]`).remove();
@@ -1030,7 +1034,7 @@ function openPopover(type, anchor, id = '', extra = {}) {
   if (type === 'mobile-navigation') {
     html = `<h2>More pages</h2>${navigation.filter(([view]) => !['home', 'projects', 'collections', 'reminders'].includes(view)).map(([view, label]) => `<button class="popover-option" data-view="${view}">${icon(view)}<span>${label}</span></button>`).join('')}`;
   } else if (['status', 'pause'].includes(type)) {
-    const statuses = isProject(entry) ? projectStatuses : entry?.kind === 'recurring' || entry?.fields?.kind === 'recurring' ? [...taskStatuses, 'paused'] : taskStatuses;
+    const statuses = isProject(entry) ? projectStatuses : taskStatuses;
     const options = type === 'pause' ? ['paused'] : statuses;
     html = `<h2>${type === 'pause' ? 'Pause job' : 'Change status'}</h2><input class="popover-search" type="search" aria-label="Find status" placeholder="Find status…" autocomplete="off"><div class="popover-options">${options.map(status => `<button class="popover-option status-${status}" data-status-value="${status}" aria-pressed="${entry?.status === status}"><span>${icon(statusIcon(status))} ${status}</span>${entry?.status === status ? icon('check') : ''}</button>`).join('')}</div><form id="reason-form" hidden><label for="status-reason">Reason <span aria-hidden="true">(required)</span></label><textarea id="status-reason" name="reason" rows="3" required maxlength="2000" placeholder="What needs to change?"></textarea><button class="primary-button" type="submit">Apply status</button></form>`;
   } else if (type === 'priority') {
