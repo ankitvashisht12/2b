@@ -1,0 +1,87 @@
+{
+  "fixture": "Representative demo data; same store for both versions.",
+  "baseline": "d45dc1136bafe170287fa1848f70796d82c773f2",
+  "updatedSource": "a76640befafbf735d99450d28880693cc1c659c4",
+  "captures": [
+    {
+      "label": "main",
+      "route": "home",
+      "filename": "main-home.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "main",
+      "route": "collections?q=lighthouse",
+      "filename": "main-collections-search.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "main",
+      "route": "reminders",
+      "filename": "main-repeat-reminder.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "main",
+      "route": "home",
+      "filename": "main-phone-home.png",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 390
+      }
+    },
+    {
+      "label": "updated",
+      "route": "home",
+      "filename": "updated-home.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "updated",
+      "route": "collections?q=lighthouse",
+      "filename": "updated-collections-search.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "updated",
+      "route": "reminders",
+      "filename": "updated-repeat-reminder.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000,
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "label": "updated",
+      "route": "home",
+      "filename": "updated-phone-home.png",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 390
+      }
+    }
+  ]
+}
