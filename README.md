@@ -5,7 +5,7 @@
   <br><sub><a href="docs/media/2b-demo.mp4">▶ Watch the original demo</a></sub>
 </p>
 
-**2b v2.0** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it. Files live in `~/obsidian/2b`. Set `TWOB_HOME` or `~/.config/2b/config.json` (`{ "home": "/your/path" }`) to use another store.
+**2b v2.0** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it.
 
 ## The model
 
@@ -32,6 +32,8 @@ ln -s "$PWD/skill" ~/.claude/skills/2b
 ln -s "$PWD/skill" ~/.agents/skills/2b
 2b init
 ```
+
+Data lives in `~/obsidian/2b`. Override it with `TWOB_HOME` or `~/.config/2b/config.json` (`{ "home": "/your/path" }`).
 
 If these links already exist, keep them when they point to this checkout. Run `2b --version` to check the installed version. Run `2b help` for all commands. Agents should read [the 2b skill](skill/SKILL.md).
 
@@ -110,10 +112,12 @@ Failures are saved and retried on the next worker run. `reminder show` includes 
 The local dashboard has Home, Projects, Due, Timeline, Jobs, Collections, Reminders, and Inbox tabs. It supports light and dark themes, search, filters, keyboard shortcuts, and a command palette.
 
 - Open a project to see its tasks and collections.
-- Use Collections to create a collection, write notes, and read notes or files. Open a collection or note to see its sources and outputs.
-- Use Reminders to create one-time or repeating reminders, view history, and cancel scheduled reminders.
+- Use **New collection** or **New note** in Collections to open a creation dialog. Read notes or files from the collection list. Open a collection or note to see its sources and outputs.
+- Use **New reminder** in Reminders to open a creation dialog. View history and cancel scheduled reminders from the list.
 - Use Jobs to inspect runs, run a job now, pause it, or restore a deleted job.
 - Use Inbox for quick notes and learnings, with an option to turn a note into a task.
+
+On phones, the bottom bar shows Home, Projects, Collections, Reminders, and **More**. More opens Due, Timeline, Jobs, and Inbox.
 
 Use `g c` for Collections and `g r` for Reminders. Press `?` for all shortcuts. The server listens only on the local machine, at port 4422 by default. Use `--port N` for a second store. Restart a running dashboard server after upgrading so it loads the new code.
 
@@ -154,6 +158,6 @@ npm test
 node --check dash/app.js
 ```
 
-Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for v2.0 changes.
+Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for v2.0 changes and [the dashboard review](docs/dashboard-ux-review.md) for current UX findings and next steps.
 
 Codex jobs run with `--sandbox workspace-write` in the store. They can run commands and write store files. Claude jobs restrict their allowed tools to the 2b CLI and read tools. Choose the runner and source data that fit the task.

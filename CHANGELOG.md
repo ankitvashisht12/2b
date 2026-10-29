@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Replace inline collection, note, and reminder forms with creation dialogs.
+- Add clear scheduling modes, inline errors, save progress, and keyboard focus handling.
+- Keep every dashboard page reachable through a five-item phone bar and More menu.
+- Use accessible form borders and correct collection and note drawer labels.
+- Add the independent dashboard UX review and move store configuration below installation.
+
 ## 2.0.0
 
 - New AI jobs use Codex by default. Existing explicit agent settings stay unchanged.
