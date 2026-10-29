@@ -3,7 +3,7 @@ name: 2b
 description: The user's second brain for projects, tasks, deadlines, statuses, artifacts, notes, learnings, rules, and recurring jobs. Use for "2b", "second brain", "save this", "put this in 2b", "artifact", "what is active / paused / due", "what did I do this week", "every day at 7pm do X", "remind me", "rule for this task", or when starting work on something that may already be a 2b task.
 ---
 
-# 2b v2.0
+# 2b v2.1
 
 All of the user's work state lives in the 2b store (`2b path` prints it; default `~/obsidian/2b`). Change it only through the `2b` CLI. Read files directly when you need their content. Never hand-edit `readme.md` frontmatter or `log.md`.
 

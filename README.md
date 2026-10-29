@@ -5,7 +5,7 @@
   <br><sub><a href="docs/media/2b-demo.mp4">▶ Watch the original demo</a></sub>
 </p>
 
-**2b v2.0** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it.
+**2b v2.1** is a local CLI and dashboard for projects, tasks, saved knowledge, reminders, and scheduled AI work. Use it yourself or ask your agent to use it.
 
 ## The model
 
@@ -162,6 +162,6 @@ npm test
 node --check dash/app.js
 ```
 
-Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for v2.0 changes and [the dashboard review](docs/dashboard-ux-review.md) for current UX findings and next steps.
+Tests use isolated stores. Scheduler tests avoid installing real jobs, and reminder tests replace desktop delivery. See [the changelog](CHANGELOG.md) for release changes and [the dashboard review](docs/dashboard-ux-review.md) for current UX findings and next steps.
 
 Codex jobs run with `--sandbox workspace-write` in the store. They can run commands and write store files. Claude jobs restrict their allowed tools to the 2b CLI and read tools. Choose the runner and source data that fit the task.

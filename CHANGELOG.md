@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-10-29
 
 - Scope dashboard filters and search to each view, including nested note content and excerpts.
 - Separate human action groups from scheduled jobs on Home and fold long activity lists.

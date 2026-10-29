@@ -13,7 +13,9 @@ import { trashTask, restoreTask, listTrash } from './trash.ts';
 import { createReminder, listReminders, cancelReminder, dispatchReminders, reminderDir } from './reminders.ts';
 import { applyPlan, scanSources } from './importer.ts';
 
-const USAGE = `2b — second brain v2.0.0
+const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
+const USAGE = `2b — second brain v${VERSION}
 
   2b init
   2b new project <slug> --area work|personal [--title T] [--deadline D] [--priority P1|P2|P3|P4|P5] [--body TEXT]
@@ -488,7 +490,7 @@ async function main(): Promise<void> {
     ]),
   });
   options = parsed.values as Options;
-  if (options.version) { console.log('2.0.0'); return; }
+  if (options.version) { console.log(VERSION); return; }
   const [command, ...positionals] = parsed.positionals;
   rest = positionals;
   if (!command || command === 'help' || options.help) {

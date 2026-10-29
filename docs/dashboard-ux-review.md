@@ -1,6 +1,6 @@
 # Dashboard refinement review — 29 October 2026
 
-This review covers the separate `t3/refine-dashboard-ux` branch. Its baseline is main at `d45dc1136bafe170287fa1848f70796d82c773f2`. The final reviewed code is `a76640befafbf735d99450d28880693cc1c659c4`. Documentation and screenshot commits follow that code revision. This work does not merge into main or change the store model, CLI, or existing data.
+This review covers the separate `t3/refine-dashboard-ux` branch. Its baseline is main at `d45dc1136bafe170287fa1848f70796d82c773f2`. The final reviewed code is `a76640befafbf735d99450d28880693cc1c659c4`. Documentation and screenshot commits follow that code revision. This refinement was developed separately from main. It preserves the store model and saved data. Release metadata identifies it as v2.1.0.
 
 ## Method
 

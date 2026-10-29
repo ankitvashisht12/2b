@@ -147,7 +147,7 @@ test('v2 CLI works with an existing store and does not require a task for notes'
   assert.match(run('find', 'useful').stdout, /useful/);
   assert.equal(run('note', 'edit', 'sample/collections/notes/notes/today', '--body', 'Revised note').status, 0);
   assert.match(run('show', 'sample/collections/notes/notes/today', '--json').stdout, /Revised note/);
-  assert.equal(run('--version').stdout.trim(), '2.0.0');
+  assert.equal(run('--version').stdout.trim(), JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
   assert.equal(run('check').stdout.trim(), 'No problems.');
 });
 
