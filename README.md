@@ -73,3 +73,7 @@ npm run build
 ```
 
 `npm run build` type-checks `dash-v3` and writes `dash-v3/dist/index.html` and `dash-v3/dist/assets/`. Node runs the server's stripped TypeScript directly. Read [the V3 architecture](docs/v3-architecture.md), [migration details](src/v3/MIGRATION.md), and [the V2 reference](docs/v2-reference.md).
+
+## Website
+
+The public landing page and the v1, v2, and v3 pages are a Vite and React app in `site/`. Run `npm run dev:site` to work on it and `npm run build:site` to write `site/dist`. Vercel builds it from `vercel.json`; no project settings are needed.

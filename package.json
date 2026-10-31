@@ -7,6 +7,8 @@
     "start": "./bin/2b start",
     "dev": "./bin/2b dash",
     "build": "tsc -p dash-v3 --noEmit && vite build --config dash-v3/vite.config.ts",
+    "build:site": "tsc -p site --noEmit && vite build --config site/vite.config.ts",
+    "dev:site": "vite --config site/vite.config.ts",
     "check": "tsc --noEmit && tsc -p dash-v3 --noEmit && node --experimental-strip-types --no-warnings scripts/check-v3.ts",
     "test:v3": "node --experimental-strip-types --no-warnings --test test/v3-*.test.ts",
     "typecheck": "tsc --noEmit",
