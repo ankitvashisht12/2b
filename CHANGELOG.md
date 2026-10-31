@@ -1,3 +1,11 @@
+# 3.0.0 — local object system
+
+- Added typed objects and named graph relationships backed by local SurrealDB.
+- Kept ordinary vault files and a safe copy migration from both source vaults.
+- Added a mixed Today, Inbox, object browser, custom types, and connected reading.
+- Added editable ~/.2b configuration, per-vault identity, and a Mac launcher.
+- Kept imported jobs disabled while retaining their source configuration.
+
 # Changelog
 
 ## 2.1.0 — 2026-10-29
