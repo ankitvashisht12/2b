@@ -43,6 +43,17 @@ function Landing() {
           </div>
         </Entry>
 
+        <section className="section" aria-labelledby="video">
+          <SectionHead id="video" title="See it in one minute">
+            A walk through Today, projects, people, books, the graph, and your agent. The data in the video is made up.
+          </SectionHead>
+          <Entry label={<strong>Demo</strong>}>
+            <video className="demo-video" src="/2b-v3-demo.mp4" poster="/2b-v3-demo.jpg" controls muted playsInline preload="none">
+              <a href="/2b-v3-demo.mp4">Download the demo video</a>
+            </video>
+          </Entry>
+        </section>
+
         <section className="section" aria-labelledby="how">
           <SectionHead id="how" title="How 2b keeps things">
             No folders to choose and no pages to keep tidy. You save an item, give it a type, and link it to other items.

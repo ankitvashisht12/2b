@@ -820,3 +820,14 @@ p + p { margin-top: 0.625rem; }
   .copy-button:active { transform: none; }
   .version-row:hover .go svg { transform: none; }
 }
+
+.demo-video {
+  display: block;
+  width: 100%;
+  max-width: 60rem;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--sunken);
+  box-shadow: var(--shadow);
+}

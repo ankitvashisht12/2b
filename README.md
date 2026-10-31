@@ -1,5 +1,10 @@
 # 2b v3
 
+<p align="center">
+  <a href="site/public/2b-v3-demo.mp4"><img src="site/public/2b-v3-demo.jpg" alt="2b v3 demo video: Today, projects, people, books, the graph, and an agent saving a note" width="100%"></a>
+  <br><sub><a href="site/public/2b-v3-demo.mp4">▶ Watch the 1-minute demo</a> · <a href="https://get2b.vercel.app">get2b.vercel.app</a></sub>
+</p>
+
 A local second brain for objects, work, and linked knowledge. Ordinary content files stay readable in Obsidian and Finder. SurrealDB stores properties, relationships, types, and work state.
 
 This checkout is an isolated local V3 preview. It does not replace your global V2 CLI or its schedules.
