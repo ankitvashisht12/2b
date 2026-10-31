@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 local/
+
+.tools/
+vendor-skills/
+.2b/
+dash-v3/dist/
