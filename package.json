@@ -1,6 +1,7 @@
 {
   "name": "2b",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --no-warnings --test --test-concurrency=1 test/*.test.ts",

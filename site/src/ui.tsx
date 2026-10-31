@@ -43,6 +43,7 @@ export function SiteFooter() {
           <a href="/v2/">v2</a>
           <a href="/v1/">v1</a>
           <a href={repo}>Source on GitHub</a>
+          <a href={`${repo}/blob/main/LICENSE`}>MIT license</a>
           <a href={`${repo}/issues`}>Report a problem</a>
         </nav>
       </div>

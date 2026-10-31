@@ -82,3 +82,7 @@ npm run build
 ## Website
 
 The public landing page and the v1, v2, and v3 pages are a Vite and React app in `site/`. Run `npm run dev:site` to work on it and `npm run build:site` to write `site/dist`. Vercel builds it from `vercel.json`; no project settings are needed.
+
+## License
+
+[MIT](LICENSE).
