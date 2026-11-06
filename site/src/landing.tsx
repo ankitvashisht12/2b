@@ -15,7 +15,7 @@ function Landing() {
       </a>
       <SiteHeader />
       <main id="main" className="page spine">
-        <Entry className="hero" mark="strong" label={<span className="numeric">v3.0.0</span>}>
+        <Entry className="hero" mark="strong" label={<span className="numeric">v3.1.0</span>}>
           <h1>A second brain that lives on your Mac.</h1>
           <div className="hero-grid">
             <div className="hero-copy">

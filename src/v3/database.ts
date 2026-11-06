@@ -7,12 +7,13 @@ import {
   stat,
   readdir,
   rm,
+  rename,
   open,
 } from "node:fs/promises";
 import { resolve, dirname, join, relative, isAbsolute } from "node:path";
 import { homedir } from "node:os";
-import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -94,50 +95,193 @@ export async function guardRoot(root: string): Promise<string> {
   await mkdir(metadata, { recursive: true, mode: 0o700 });
   return target;
 }
+const lockWaitMs = 60_000;
+// Reduce polling frequency for locks held longer than a minute.
+const lockGraceMs = 60_000;
+const ownerTokenPattern = /^[0-9a-f-]{36}$/;
+let lockHoldLimitMs = 0;
+interface LockHolder {
+  identity: string;
+  pid?: number;
+  command?: string;
+  acquiredAt: number;
+}
+export type LockState = "free" | "held" | "acquiring" | "abandoned";
+export const lockPath = (directory: string) => join(directory, "operation.lock");
+// A long-running process that never finishes a locked action blocks every other
+// 2b process. Exiting turns it into a dead owner, which the next caller recovers.
+export function exitIfLockHeldLongerThan(milliseconds: number) {
+  lockHoldLimitMs = milliseconds;
+}
+function processRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error.code !== "ESRCH";
+  }
+}
+async function readHolder(lock: string): Promise<LockHolder | null> {
+  let details;
+  try {
+    details = await stat(lock);
+  } catch (error: any) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  let owner: any = {};
+  try {
+    owner = JSON.parse(await readFile(join(lock, "owner.json"), "utf8"));
+    if (!owner || typeof owner !== "object" || Array.isArray(owner))
+      throw new SyntaxError("Invalid lock owner record");
+  } catch (error: any) {
+    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    try {
+      owner = { pid: Number(await readFile(join(lock, "pid"), "utf8")) };
+    } catch (reason: any) {
+      if (reason.code !== "ENOENT") throw reason;
+    }
+  }
+  return {
+    identity: ownerTokenPattern.test(owner.token)
+      ? owner.token
+      : `legacy-${details.ino}`,
+    pid: Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined,
+    command: typeof owner.command === "string" ? owner.command : undefined,
+    acquiredAt: Date.parse(owner.acquiredAt) || details.mtimeMs,
+  };
+}
+function holderState(holder: LockHolder): Exclude<LockState, "free"> {
+  if (!holder.pid) return "acquiring";
+  return processRunning(holder.pid) ? "held" : "abandoned";
+}
+// Only an abandoned lock is moved, and only to a name derived from its owner.
+// If another caller recovered it first and a new owner took the lock, that
+// name already exists, so the rename fails instead of moving the new lock.
+async function retireAbandoned(lock: string, holder: LockHolder): Promise<boolean> {
+  const current = await readHolder(lock);
+  if (current?.identity !== holder.identity || current.pid !== holder.pid)
+    return false;
+  try {
+    await rename(lock, `${lock}.abandoned-${holder.identity}`);
+    return true;
+  } catch (error: any) {
+    if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) return false;
+    throw error;
+  }
+}
+async function tryAcquire(lock: string, token: string): Promise<boolean> {
+  try {
+    await mkdir(lock);
+  } catch (error: any) {
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+  try {
+    await writeFile(join(lock, "pid"), String(process.pid));
+    await writeFile(
+      join(lock, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        token,
+        acquiredAt: new Date().toISOString(),
+        command: process.argv
+          .slice(1, 3)
+          .map((part) => part.split("/").pop())
+          .join(" "),
+      }),
+    );
+    return true;
+  } catch (error) {
+    await rm(lock, { recursive: true, force: true });
+    throw error;
+  }
+}
+async function release(lock: string, token: string) {
+  const holder = await readHolder(lock);
+  if (holder?.identity !== token) {
+    console.error(
+      `2b v3: the database lock ${lock} was replaced while this process held it. The new lock was left in place.`,
+    );
+    return;
+  }
+  const released = `${lock}.released-${token}`;
+  await rename(lock, released);
+  await rm(released, { recursive: true, force: true });
+}
+function describeHolder(holder: LockHolder): string {
+  const seconds = Math.round((Date.now() - holder.acquiredAt) / 1000);
+  const age = seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
+  const owner = holder.pid
+    ? `PID ${holder.pid}${holder.command ? ` (${holder.command})` : ""}`
+    : "A process that has not written its PID";
+  return `${owner} has held it for ${age}.`;
+}
+function lockAdvice(state: LockState, holder: LockHolder | null): string {
+  if (state === "free") return "No process holds the database lock.";
+  if (state === "abandoned")
+    return 'Its owner has exited. Run "2b lock recover", or any 2b command, to recover it.';
+  if (state === "acquiring")
+    return "The lock has no valid owner PID. A process may still be taking it. Check again; if the lock persists, stop all 2b processes before inspecting it. Recovery cannot verify that its owner has exited.";
+  return `PID ${holder!.pid} is still running, so 2b will not remove its lock. Run "2b lock status" and confirm its identity. If it is stuck, stop that process or its supervising service, then run "2b lock recover".`;
+}
+export async function lockStatus(directory: string) {
+  const lock = lockPath(directory);
+  const holder = await readHolder(lock);
+  const state: LockState = holder ? holderState(holder) : "free";
+  const processCommand =
+    holder?.pid && state === "held"
+      ? spawnSync("ps", ["-o", "command=", "-p", String(holder.pid)], {
+          encoding: "utf8",
+        }).stdout?.trim() || null
+      : null;
+  return {
+    path: lock,
+    state,
+    ...(holder && {
+      pid: holder.pid ?? null,
+      command: holder.command ?? null,
+      process: processCommand,
+      acquiredAt: new Date(holder.acquiredAt).toISOString(),
+      heldForSeconds: Math.round((Date.now() - holder.acquiredAt) / 1000),
+    }),
+    advice: lockAdvice(state, holder),
+  };
+}
 export async function locked<T>(
   directory: string,
   action: () => Promise<T>,
+  waitMs = lockWaitMs,
 ): Promise<T> {
-  const lock = join(directory, "operation.lock");
-  const deadline = Date.now() + 60000;
-  while (true) {
-    try {
-      await mkdir(lock);
-      await writeFile(join(lock, "pid"), String(process.pid));
-      break;
-    } catch (error: any) {
-      if (error.code !== "EEXIST") throw error;
-      try {
-        const pid = Number(await readFile(join(lock, "pid"), "utf8"));
-        try {
-          process.kill(pid, 0);
-        } catch (reason: any) {
-          if (reason.code === "ESRCH") {
-            throw Error(
-              "Abandoned database lock. Ensure no writer is active, then remove " +
-                lock,
-            );
-          }
-        }
-      } catch (reason: any) {
-        if (reason.code !== "ENOENT") throw reason;
-        // The owner can release the lock between these reads.
-        try {
-          if (Date.now() - (await stat(lock)).mtimeMs > 60000)
-            throw Error("Abandoned database lock: " + lock);
-        } catch (error: any) {
-          if (error.code !== "ENOENT") throw error;
-        }
-      }
-      if (Date.now() > deadline)
-        throw Error("Timed out waiting for database lock");
-      await pause(30);
-    }
+  const lock = lockPath(directory);
+  const token = randomUUID();
+  const deadline = performance.now() + waitMs;
+  while (!(await tryAcquire(lock, token))) {
+    const holder = await readHolder(lock);
+    const state = holder ? holderState(holder) : "free";
+    if (state === "abandoned" && (await retireAbandoned(lock, holder!))) continue;
+    if (performance.now() > deadline)
+      throw Error(
+        `Timed out after ${waitMs / 1000} s waiting for the database lock ${lock}. ` +
+          (holder ? describeHolder(holder) + " " : "") +
+          lockAdvice(state, holder),
+      );
+    const longHeld = holder && Date.now() - holder.acquiredAt > lockGraceMs;
+    await pause(longHeld ? 1000 : 30);
   }
+  const holdLimit =
+    lockHoldLimitMs &&
+    setTimeout(() => {
+      console.error(
+        `2b v3: this process held the database lock ${lock} for over ${lockHoldLimitMs / 1000} s without finishing. Exiting so the next 2b command can recover the lock.`,
+      );
+      process.exit(75);
+    }, lockHoldLimitMs).unref();
   try {
     return await action();
   } finally {
-    await rm(lock, { recursive: true, force: true });
+    clearTimeout(holdLimit);
+    await release(lock, token);
   }
 }
 interface ServerState {

@@ -97,6 +97,7 @@ Human routines are not agent jobs. Imported jobs/reminders stay disabled with mi
 - `2b reconcile`: recover interrupted writes and report changed/missing/unregistered files.
 - `2b check`: validate files and relationship endpoints.
 - `2b export --out metadata-export.json`: portable metadata export inside the vault.
+- `2b lock status`: after "Timed out ... waiting for the database lock", show the owner. `2b lock recover` removes the lock only if its owner has exited. Do not delete an active lock. Confirm the owner identity and stop a stuck process or its supervising service only within an authorised repair. Then use `2b lock recover`.
 
 Code repos never go in the vault. Make them with `2b repo create NAME --link TASK_ID` (folder in ~/2b/repos/NAME, one linked artifact in 2b). Move an existing folder with `--from PATH`. Single files (HTML report, Markdown, one script, image) can be vault artifacts. Never put secrets (.env, keys) in the vault.
 

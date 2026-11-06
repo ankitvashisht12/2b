@@ -16,7 +16,7 @@
     "test:browser": "node --experimental-strip-types --no-warnings scripts/test-browser-v3.ts",
     "test:graph": "node --experimental-strip-types --no-warnings scripts/test-graph-v3.ts"
   },
-  "version": "3.0.0",
+  "version": "3.1.0",
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.3.3",

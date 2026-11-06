@@ -1,3 +1,11 @@
+# 3.1.0 — database lock recovery
+
+- Recover the database lock automatically when its owner has exited.
+- Never remove a lock whose owner is still running. Lock time-out errors now give the owner PID, command, lock age, and the next step.
+- Add `2b lock status` and `2b lock recover`.
+- Release only the lock that this process took, so a late finish cannot remove a newer owner's lock.
+- Make `2b worker` exit when it holds the lock for more than five minutes, so its supervisor can restart it.
+
 # 3.0.0 — local object system
 
 - Added typed objects and named graph relationships backed by local SurrealDB.

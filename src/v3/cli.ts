@@ -8,6 +8,7 @@ import { ObjectStore } from './store.ts';
 import { ensureConfig, loadConfig, configPath, metadataDirectory } from './config.ts';
 import { vaultRoot, contentPath, readBody, writeBody, reconcileFiles, atomicWrite } from './files.ts';
 import { createObject, startDashboard } from './server.ts';
+import { exitIfLockHeldLongerThan, lockStatus, locked } from './database.ts';
 
 const help = `2b v3 — local objects, linked knowledge, ordinary files
 
@@ -36,6 +37,8 @@ const help = `2b v3 — local objects, linked knowledge, ordinary files
   2b tag add ID TAG                      Add an existing tag to an object
   2b job run ID                         Run an explicitly enabled agent job
   2b worker [--once]                    Process enabled jobs and reminders locally
+  2b lock status                        Show which process holds the database lock
+  2b lock recover                       Remove the lock of a process that has exited
   2b organize                           Apply the reviewed V3 backfill grouping
   2b migrate [--dry-run]                 Copy both original vaults into V3
   2b graph rebuild                      Refresh related links in Obsidian notes
@@ -57,7 +60,7 @@ const parseValue = (value: string) => { try { return JSON.parse(value); } catch 
 const localDay = (date = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: loadConfig().timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 
 async function main() {
-  if (values.version || args[0] === 'version') return output('3.0.0');
+  if (values.version || args[0] === 'version') return output('3.1.0');
   if (values.help || !args.length || args[0] === 'help') return output(help);
   const root = vaultRoot(typeof values.root === 'string' ? values.root : undefined);
   const command = args[0];
@@ -75,7 +78,7 @@ async function main() {
       let live = false;
       try {
         const health = await fetch(url + '/api/health');
-        live = health.ok && (await health.json()).version === '3.0.0';
+        live = health.ok && (await health.json()).version === '3.1.0';
         if (live) {
           const state = await (await fetch(url + '/api/state')).json();
           if (state.root !== root) throw new Error('This port serves a different vault. Choose another --port.');
@@ -89,12 +92,12 @@ async function main() {
         let ready = false;
         for (let attempt = 0; attempt < 100; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 150));
-          try { const result = await fetch(url + '/api/health'); if (result.ok && (await result.json()).version === '3.0.0') { ready = true; break; } } catch {}
+          try { const result = await fetch(url + '/api/health'); if (result.ok && (await result.json()).version === '3.1.0') { ready = true; break; } } catch {}
         }
         if (!ready) throw new Error(`Dashboard did not start. Read ${path.join(metadataDirectory(root), 'dashboard.log')}`);
       }
       if (process.platform === 'darwin') spawnSync('open', [url]);
-      return output({ url, root, version: '3.0.0' });
+      return output({ url, root, version: '3.1.0' });
     }
     const dashboard = await startDashboard(root, port);
     output(`2b v3: http://127.0.0.1:${dashboard.port}\nVault: ${root}`);
@@ -109,11 +112,21 @@ async function main() {
       if (args[1] !== 'run') throw new Error('Use 2b job run ID');
       return output(await runAgentJob(root, needed(args[2], 'Job ID')));
     }
+    exitIfLockHeldLongerThan(5 * 60_000);
     return runWorker(root, Boolean(values.once));
+  }
+  if (command === 'lock') {
+    const directory = metadataDirectory(root);
+    const before = await lockStatus(directory);
+    if (args[1] === 'status') return output(before);
+    if (args[1] !== 'recover') throw new Error('Use 2b lock status or 2b lock recover');
+    if (before.state === 'held' || before.state === 'acquiring') throw new Error(before.advice);
+    await locked(directory, async () => {});
+    return output({ recovered: before.state === 'abandoned', ...await lockStatus(directory) });
   }
   const store = await ObjectStore.open(root);
   try {
-    if (command === 'init') return output({ root, types: (await store.types()).length, version: '3.0.0' });
+    if (command === 'init') return output({ root, types: (await store.types()).length, version: '3.1.0' });
     if (command === 'ls' || command === 'find') return output(await store.list({ type: values.type as string, search: (values.search || (command === 'find' ? args.slice(1).join(' ') : undefined)) as string, status: values.status as string, tag: values.tag as string, limit: values.limit ? Number(values.limit) : undefined }));
     if (command === 'type') {
       if (args[1] === 'ls') return output(await store.types());

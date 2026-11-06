@@ -64,7 +64,7 @@ export async function startDashboard(rootInput: string, port = 4423) {
       if (request.headers.origin && request.headers.origin !== url.origin) return send({ error: 'Cross-origin requests are not allowed' }, 403);
       response.setHeader('X-Content-Type-Options', 'nosniff');
       response.setHeader('Referrer-Policy', 'no-referrer');
-      if (url.pathname === '/api/health') return send({ ok: true, version: '3.0.0' });
+      if (url.pathname === '/api/health') return send({ ok: true, version: '3.1.0' });
       if (url.pathname === '/api/startup' && request.method === 'GET') {
         const objects = await store.summaries(true);
         const [relationships, types, totals] = await Promise.all([store.relationshipsAmong(objects.map(object => object.id)), store.types(), store.statistics()]);

@@ -112,7 +112,7 @@ function V3Page() {
         facts={
           <>
             <span>
-              Git tag <b>v3.0.0</b>
+              Git tag <b>v3.1.0</b>
             </span>
             <span>
               Needs <b>macOS on Apple silicon</b> and <b>Node.js 22+</b>
@@ -182,9 +182,9 @@ function V3Page() {
 
       <SourceLinks
         links={[
-          { href: `${repo}/tree/v3.0.0`, label: 'Code at v3.0.0' },
-          { href: `${repo}/blob/v3.0.0/docs/v3-architecture.md`, label: 'Architecture' },
-          { href: `${repo}/blob/v3.0.0/CHANGELOG.md`, label: 'Changelog' },
+          { href: `${repo}/tree/v3.1.0`, label: 'Code at v3.1.0' },
+          { href: `${repo}/blob/v3.1.0/docs/v3-architecture.md`, label: 'Architecture' },
+          { href: `${repo}/blob/v3.1.0/CHANGELOG.md`, label: 'Changelog' },
         ]}
       />
     </>

@@ -68,6 +68,19 @@ npx playwright install chromium
 npm run test:browser   # isolated fixture vault; set PLAYWRIGHT_EXECUTABLE_PATH to use an installed Chromium
 ```
 
+## Database lock
+
+Each database operation holds `operation.lock` in the vault database folder (`~/.2b/vaults/<stable-id>`). This stops two processes from writing at the same time. Other processes wait up to 60 seconds. Then they stop with an error that gives the owner PID, its command, and how long it has held the lock.
+
+- If the owner has exited, the next 2b command that uses the database moves the lock to `operation.lock.abandoned-<owner>` and continues. `2b lock recover` does only this step.
+- If the owner is still running, 2b does not remove its lock, however old it is. From outside, a slow writer and a stuck writer look the same. Run `2b lock status`. Confirm the process identity before stopping it. If it is stuck, stop that process or its supervising service, then run `2b lock recover`. Do not delete the lock by hand: a writer could still be active.
+- A lock with no valid owner PID is also protected, even when old. Recovery cannot prove its owner has exited. Inspect it only after all 2b processes have stopped. Failed owner-record writes remove the creating process's lock.
+- `2b worker` exits when it holds the lock for more than five minutes, so its supervisor (for example launchd) can start it again and the lock is recovered.
+
+A running PID is protected even if its timestamps suggest PID reuse. A changed system clock must not let another writer take the lock. If that PID was reused, inspect it and stop the relevant 2b services before recovery.
+
+The `abandoned-*` folders keep the old owner record for diagnosis and guard concurrent recovery. Keep them while any 2b process is running. Remove them only after all 2b processes have stopped.
+
 ## Dashboard build
 
 The dashboard is React with shadcn/ui. Its built files are in `dash-v3/dist`, and the server serves them, so `./bin/2b start` needs no build step. After you change `dash-v3/src`, rebuild:
